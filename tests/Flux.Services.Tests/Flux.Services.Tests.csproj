@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><UseWPF>true</UseWPF></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/Flux.Core/Flux.Core.csproj"/><Compile Include="../../src/Flux.App/Services/*.cs" Link="Services/%(Filename)%(Extension)"/></ItemGroup>
+</Project>

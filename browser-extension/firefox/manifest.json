@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "Flux — Download manager",
+  "version": "1.0.0",
+  "description": "Send HTTP/HTTPS links to the open-source Flux desktop download manager.",
+  "permissions": [
+    "nativeMessaging",
+    "contextMenus",
+    "activeTab",
+    "storage",
+    "cookies",
+    "downloads",
+    "webRequest",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Flux",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' ws://localhost:6543"
+  },
+  "background": {
+    "scripts": [
+      "background.mjs"
+    ],
+    "type": "module"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "flux@flux.local",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": [
+          "authenticationInfo",
+          "browsingActivity",
+          "websiteContent"
+        ]
+      }
+    }
+  }
+}

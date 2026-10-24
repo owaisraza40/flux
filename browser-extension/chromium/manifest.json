@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "Flux — Download manager",
+  "version": "1.0.0",
+  "description": "Send HTTP/HTTPS links to the open-source Flux desktop download manager.",
+  "permissions": [
+    "nativeMessaging",
+    "contextMenus",
+    "activeTab",
+    "storage",
+    "cookies",
+    "downloads",
+    "webRequest",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Flux",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' ws://localhost:6543"
+  },
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnnqlXD7CM0Z8GVQ9/aPdunps2ctiir7V/H5NUg4wrya8ocppF4PzJLIAdBqFt36NjR3NUnG6A00KkW0n5qwzuv0TGlg9FYXoubBWpbnzL6k/9UnDqwCKQKQANoAPSjdNLcbBNoP+Dkzea1/CmgWAW0BFF/Z1+kCn3cbJK3AIOdPGR17GvMvT8WCUJ0iROhkSxbmFJCnmp5QbmRcJ6NVfX5b6CHvSIidFajQwkeWJpS0E1Jngk5KnVNRtgN5gfuxZN+IdEOhyD9xC/4jsM3TPlthpnvLFv7VtaVFMxhnCJBdIM602eSqgwnBqtSai1e1aDNnsP9ZV0DQQ06H3kbDBHwIDAQAB",
+  "background": {
+    "service_worker": "background.mjs",
+    "type": "module"
+  }
+}

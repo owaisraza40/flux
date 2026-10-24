@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flux</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 5v16m-6-6 6 6 6-6M7 24v3h18v-3"/></svg></span>
+    <div><h1>Flux</h1><p>Make room for what’s next.</p></div>
+    <span class="version">1.0</span>
+  </header>
+  <main>
+    <div class="eyebrow">SEND TO YOUR DESKTOP</div>
+    <h2>A better home for<br>your downloads.</h2>
+    <label for="urls">Download links <span>One URL per line · up to 100</span></label>
+    <textarea id="urls" rows="5" spellcheck="false" placeholder="https://example.com/file.zip" aria-describedby="url-help"></textarea>
+    <p id="url-help" class="hint">HTTP and HTTPS files. Nothing is sent until you choose Download.</p>
+    <div class="actions"><button id="current-tab" class="quiet">Use current tab</button><span id="link-count">0 links</span></div>
+    <button id="send" class="primary">Download with Flux <span aria-hidden="true">↗</span></button>
+    <div id="status" class="status" role="status" aria-live="polite">Connect the desktop app to get started.</div>
+    <details>
+      <summary>Connect your browser</summary>
+      <ol><li>Open the Flux desktop app.</li><li>Open <strong>Browser integration</strong>, choose your browser, and register this extension ID.</li><li>Return here and check the connection.</li></ol>
+      <label class="id-label" for="extension-id">This extension’s ID</label>
+      <input id="extension-id" readonly aria-label="Extension ID">
+      <p class="hint">Firefox uses <code>flux@flux.local</code>. Chrome and Edge use the ID above.</p>
+    </details>
+    <button id="check" class="secondary">Check desktop connection</button>
+    <button id="options" class="secondary">Capture rules &amp; privacy settings</button>
+  </main>
+  <footer>OPEN SOURCE · YOUR FILES, YOUR CONTROL</footer>
+  <script type="module" src="popup.mjs"></script>
+</body>
+</html>

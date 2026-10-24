@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+artifacts/
+dist/
+*.user
+*.suo
+*.log
+*.sfpart
+*.sfresume
+*.tmp
+test-results/
+.local/
+/docs/DEVELOPMENT-CONTRACT.md
+/docs/FLUX-V1-CONTRACT.md
+

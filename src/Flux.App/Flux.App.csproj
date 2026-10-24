@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <StartupObject>Flux.App.Program</StartupObject>
+    <AssemblyName>Flux</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../../assets/flux.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Flux.Core/Flux.Core.csproj" /></ItemGroup>
+  <ItemGroup><Resource Include="../../assets/fonts/*.ttf"><Link>assets/fonts/%(Filename)%(Extension)</Link></Resource></ItemGroup>
+  <ItemGroup>
+    <Content Include="../../assets/fonts/*-OFL.txt;../../assets/licenses/*.txt"><Link>licenses/%(Filename)%(Extension)</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory><ExcludeFromSingleFile>true</ExcludeFromSingleFile></Content>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="../../browser-extension/chromium/**/*"><Link>browser-extension/chromium/%(RecursiveDir)%(Filename)%(Extension)</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory><ExcludeFromSingleFile>true</ExcludeFromSingleFile></Content>
+    <Content Include="../../browser-extension/firefox/**/*"><Link>browser-extension/firefox/%(RecursiveDir)%(Filename)%(Extension)</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory><CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory><ExcludeFromSingleFile>true</ExcludeFromSingleFile></Content>
+  </ItemGroup>
+</Project>
