@@ -2,7 +2,7 @@
 // Browser APIs are controlled fixtures; no personal browser profile is modified.
 import {spawn} from "node:child_process";
 import {readFile,access} from "node:fs/promises";
-import {resolve} from "node:path";
+import {resolve,dirname} from "node:path";
 import vm from "node:vm";
 import {createHash} from "node:crypto";
 import assert from "node:assert/strict";
@@ -11,6 +11,7 @@ import * as protocol from "../shared/protocol.mjs";
 
 if(!process.argv[2])throw new Error("Usage: node browser-extension/tests/desktop-e2e.mjs <Flux.exe> [http-download-url] [--keep-open]");
 const executable=resolve(process.argv[2]);await access(executable);
+const nativeExecutable=resolve(dirname(executable),"Flux.NativeHost.exe");await access(nativeExecutable);
 const target=process.argv.slice(3).find(value=>/^https?:/.test(value))||"https://example.invalid/Flux-e2e.bin";
 const keepOpen=process.argv.includes("--keep-open");
 const manifest=JSON.parse(await readFile(new URL("../chromium/manifest.json",import.meta.url),"utf8"));
@@ -18,7 +19,7 @@ const id=[...createHash("sha256").update(Buffer.from(manifest.key,"base64")).dig
 const origin="chrome-extension://"+id;
 const frames=message=>{const body=Buffer.from(JSON.stringify(message)),header=Buffer.alloc(4);header.writeUInt32LE(body.length);return Buffer.concat([header,body]);};
 async function nativeRequest(message){
-  const child=spawn(executable,[origin+"/","--parent-window=0"],{windowsHide:true,shell:false,stdio:["pipe","pipe","pipe"]});
+  const child=spawn(nativeExecutable,[origin+"/","--parent-window=0"],{windowsHide:true,shell:false,stdio:["pipe","pipe","pipe"]});
   const stdout=[],stderr=[];const timer=setTimeout(()=>child.kill(),25000);
   try{child.stdout.on("data",value=>stdout.push(value));child.stderr.on("data",value=>stderr.push(value));child.stdin.on("error",()=>{});
     const ended=new Promise((resolve_,reject)=>{child.once("error",reject);child.once("close",code=>resolve_(code));});

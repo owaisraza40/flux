@@ -6,6 +6,8 @@ public enum DownloadStatus { Queued, Resolving, Downloading, Paused, Completed, 
 public enum DownloadPriority { High = 0, Normal = 1, Low = 2 }
 public enum CollisionPolicy { Rename, Overwrite, Skip }
 public enum DownloadKind { Auto, Http, Media }
+public enum MediaQuality { Best, Video1080, Video720, Video480, Video360, AudioMp3 }
+public enum BrowserCookieSource { None, Chrome, Edge, Firefox }
 public enum CompletionAction { None, OpenFile, PlaySound, RunScript }
 
 public interface IExternalDownloadProcessor
@@ -42,6 +44,7 @@ public sealed class DownloadItem
     public long? SpeedLimitBytesPerSecond { get; set; }
     public DateTimeOffset? StopAt { get; set; }
     public DownloadKind Kind { get; set; } = DownloadKind.Auto;
+    public MediaQuality MediaQuality { get; set; } = MediaQuality.Best;
     public CompletionAction CompletionAction { get; set; }
     public string? CompletionScript { get; set; }
     public bool ScanOnCompletion { get; set; }
@@ -71,6 +74,7 @@ public sealed class DownloadRequest
     public string? Cookies { get; set; }
     public string? Category { get; set; }
     public DownloadKind Kind { get; set; } = DownloadKind.Auto;
+    public MediaQuality MediaQuality { get; set; } = MediaQuality.Best;
     public CompletionAction CompletionAction { get; set; }
     public string? CompletionScript { get; set; }
     public bool ScanOnCompletion { get; set; }
@@ -82,6 +86,13 @@ public sealed class DownloadSettings
     public int MaxConcurrentDownloads { get; set; } = 3;
     public int ConnectionsPerDownload { get; set; } = 8;
     public int RetryCount { get; set; } = 3;
+    public double RetryDelaySeconds { get; set; } = 0.25;
+    public bool StartWithWindows { get; set; }
+    public long ScheduledSpeedLimitBytesPerSecond { get; set; }
+    public bool SoundOnCompletion { get; set; }
+    public string CaptureFileTypes { get; set; } = "zip,exe,pdf,mp4,mp3,rar,7z,iso,mkv,msi,webm,flac,epub";
+    public string DomainWhitelist { get; set; } = "";
+    public string DomainBlacklist { get; set; } = "";
     /// <summary>Aggregate byte limit across connections of each download; zero is unlimited.</summary>
     public long SpeedLimitBytesPerSecond { get; set; }
     public long GlobalSpeedLimitBytesPerSecond { get; set; }
@@ -93,18 +104,28 @@ public sealed class DownloadSettings
     public bool CheckForUpdates { get; set; } = true;
     public bool NotificationsEnabled { get; set; } = true;
     public string? ScannerExecutable { get; set; }
+    public string? YtDlpPath { get; set; }
+    public string? FfmpegPath { get; set; }
+    public string? JavaScriptRuntimePath { get; set; }
+    public MediaQuality DefaultMediaQuality { get; set; } = MediaQuality.Best;
+    public BrowserCookieSource MediaCookieBrowser { get; set; } = BrowserCookieSource.None;
     public bool DailyScheduleEnabled { get; set; }
     public string DailyStart { get; set; } = "00:00";
     public string DailyStop { get; set; } = "06:00";
     public DownloadSettings Clone() { var copy = (DownloadSettings)MemberwiseClone(); copy.CategoryDirectories = new(CategoryDirectories ?? [], StringComparer.OrdinalIgnoreCase); return copy; }
     internal void Validate()
     {
-        if (MaxConcurrentDownloads is < 1 or > 8) throw new ArgumentException("Simultaneous downloads must be between 1 and 8.");
+        if (MaxConcurrentDownloads is < 1 or > 20) throw new ArgumentException("Simultaneous downloads must be between 1 and 20.");
         if (ConnectionsPerDownload is < 1 or > 32) throw new ArgumentException("Connections must be between 1 and 32.");
         if (RetryCount is < 0 or > 10) throw new ArgumentException("Retry count must be between 0 and 10.");
+        if (!double.IsFinite(RetryDelaySeconds) || RetryDelaySeconds is < 0.1 or > 300) throw new ArgumentException("Retry delay must be between 0.1 and 300 seconds.");
+        if (ScheduledSpeedLimitBytesPerSecond is < 0 or > 1_000_000_000_000) throw new ArgumentException("Scheduled speed limit must be zero or positive.");
         if (SpeedLimitBytesPerSecond < 0 || SpeedLimitBytesPerSecond > 1_000_000_000_000) throw new ArgumentException("The speed limit must be zero or a positive number of bytes per second.");
         if (GlobalSpeedLimitBytesPerSecond < 0 || GlobalSpeedLimitBytesPerSecond > 1_000_000_000_000) throw new ArgumentException("The global speed limit must be zero or a positive number of bytes per second.");
         if (!Enum.IsDefined(CollisionPolicy)) throw new ArgumentException("Choose a valid filename collision policy.");
+        if (!Enum.IsDefined(DefaultMediaQuality) || !Enum.IsDefined(MediaCookieBrowser)) throw new ArgumentException("Choose valid media quality and cookie-source settings.");
+        foreach (var toolPath in new[] { YtDlpPath, FfmpegPath, JavaScriptRuntimePath })
+            if (!string.IsNullOrWhiteSpace(toolPath) && (!Path.IsPathFullyQualified(toolPath) || !File.Exists(toolPath))) throw new ArgumentException("Custom media tool paths must point to existing executable files.");
         if (!TimeOnly.TryParseExact(DailyStart, "HH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _) || !TimeOnly.TryParseExact(DailyStop, "HH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _)) throw new ArgumentException("Daily schedule times must use HH:mm.");
         CategoryDirectories = new(CategoryDirectories ?? [], StringComparer.OrdinalIgnoreCase);
         foreach (var key in CategoryDirectories.Keys.ToArray()) { if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(CategoryDirectories[key])) throw new ArgumentException("Category folders require a category and a path."); CategoryDirectories[key] = Path.GetFullPath(CategoryDirectories[key]); }
@@ -140,16 +161,16 @@ public static class DownloadNames
         string name;
         try { name = Uri.UnescapeDataString(uri.AbsolutePath.TrimEnd('/').Split('/').LastOrDefault() ?? ""); }
         catch (UriFormatException) { name = "download"; }
-        return Sanitize(name);
+        return Sanitize(name.Equals("watch", StringComparison.OrdinalIgnoreCase) ? "download" : name);
     }
 
     public static string Category(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
     {
         ".mp4" or ".mkv" or ".webm" or ".avi" or ".mov" or ".m4v" or ".ts" => "Video",
         ".mp3" or ".flac" or ".wav" or ".aac" or ".m4a" or ".ogg" => "Audio",
-        ".zip" or ".7z" or ".rar" or ".tar" or ".gz" or ".bz2" => "Archives",
+        ".zip" or ".7z" or ".rar" or ".tar" or ".gz" or ".bz2" or ".iso" => "Archives",
         ".pdf" or ".doc" or ".docx" or ".txt" or ".epub" or ".xlsx" or ".pptx" or ".csv" => "Documents",
-        ".exe" or ".msi" or ".msix" or ".appx" or ".iso" => "Applications",
+        ".exe" or ".msi" or ".msix" or ".appx" => "Applications",
         ".png" or ".jpg" or ".jpeg" or ".gif" or ".svg" or ".webp" or ".bmp" => "Images",
         _ => "Other"
     };

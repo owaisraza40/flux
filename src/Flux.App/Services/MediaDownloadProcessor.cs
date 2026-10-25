@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Text;
 using Flux.Core;
 
 namespace Flux.App.Services;
@@ -19,13 +20,15 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
             || uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)
             || uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase)
             || uri.Host.Equals("vimeo.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".vimeo.com", StringComparison.OrdinalIgnoreCase)
-            || uri.Host.Equals("dailymotion.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".dailymotion.com", StringComparison.OrdinalIgnoreCase);
+            || new[] { "dailymotion.com", "facebook.com", "fb.watch", "twitter.com", "x.com", "instagram.com" }.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith("." + host, StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<ExternalDownloadResult> DownloadAsync(DownloadItem item, IReadOnlyDictionary<string, string> headers, DownloadSettings settings, IProgress<ExternalDownloadProgress> progress, CancellationToken cancellationToken)
+    public Task<ExternalDownloadResult> DownloadAsync(DownloadItem item, IReadOnlyDictionary<string, string> headers, DownloadSettings settings, IProgress<ExternalDownloadProgress> progress, CancellationToken cancellationToken) => DownloadWithRetryAsync(item, headers, settings, progress, cancellationToken, false);
+
+    private async Task<ExternalDownloadResult> DownloadWithRetryAsync(DownloadItem item, IReadOnlyDictionary<string, string> headers, DownloadSettings settings, IProgress<ExternalDownloadProgress> progress, CancellationToken cancellationToken, bool challengeRetry)
     {
         progress.Report(new ExternalDownloadProgress(0, -1, 0, "Preparing media engine…"));
-        var tools = await _tools.EnsureAsync(new Progress<string>(message => progress.Report(new ExternalDownloadProgress(0, -1, 0, message))), cancellationToken).ConfigureAwait(false);
+        var tools = await _tools.EnsureAsync(settings, new Progress<string>(message => progress.Report(new ExternalDownloadProgress(0, -1, 0, message))), cancellationToken).ConfigureAwait(false);
         Directory.CreateDirectory(item.DestinationDirectory);
         var workDirectory = Path.Combine(item.DestinationDirectory, ".flux-media-" + item.Id.ToString("N"));
         Directory.CreateDirectory(workDirectory);
@@ -36,7 +39,14 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var args = new List<string> { "--ignore-config", "--no-playlist", "--no-colors", "--newline", "--windows-filenames", "--restrict-filenames", "--continue", "--no-overwrites", "--no-mtime", "--retries", settings.RetryCount.ToString(CultureInfo.InvariantCulture), "--fragment-retries", settings.RetryCount.ToString(CultureInfo.InvariantCulture), "--ffmpeg-location", tools.FfmpegDirectory, "--paths", workDirectory, "--output", "%(title).160B [%(id)s].%(ext)s", "--progress-template", "download:FLUX_PROGRESS:%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.speed)s", "--print", "after_move:FLUX_FILE:%(filepath)s" };
+                var args = new List<string> { "--ignore-config", "--no-playlist", "--no-colors", "--newline", "--windows-filenames", "--continue", "--no-overwrites", "--no-mtime", "--retries", settings.RetryCount.ToString(CultureInfo.InvariantCulture), "--fragment-retries", settings.RetryCount.ToString(CultureInfo.InvariantCulture), "--ffmpeg-location", tools.FfmpegDirectory, "--paths", workDirectory, "--output", "%(title).160B.%(ext)s", "--progress-template", "download:FLUX_PROGRESS:%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.speed)s", "--print", "after_move:FLUX_FILE:%(filepath)s", "--format", MediaArguments.Format(item.MediaQuality) };
+                if (tools.JavaScriptRuntime != null) args.AddRange(["--js-runtimes", tools.JavaScriptRuntimeKind + ":" + tools.JavaScriptRuntime]);
+                args.AddRange(["--progress", "--encoding", "utf-8", "--socket-timeout", "30", "--extractor-retries", settings.RetryCount.ToString(CultureInfo.InvariantCulture), "--retry-sleep", "http:exp=" + settings.RetryDelaySeconds.ToString(CultureInfo.InvariantCulture) + ":30", "--retry-sleep", "fragment:exp=" + settings.RetryDelaySeconds.ToString(CultureInfo.InvariantCulture) + ":30"]);
+                if (!string.IsNullOrWhiteSpace(settings.YtDlpPath)) args.AddRange(["--remote-components", "ejs:github"]);
+                if (settings.MediaCookieBrowser != BrowserCookieSource.None) args.AddRange(["--cookies-from-browser", settings.MediaCookieBrowser.ToString().ToLowerInvariant()]);
+                if (item.MediaQuality == MediaQuality.AudioMp3) args.AddRange(["--extract-audio", "--audio-format", "mp3"]);
+                else args.AddRange(["--merge-output-format", "mp4", "--remux-video", "mp4"]);
+                if (challengeRetry && IsYoutubeUrl(url)) args.AddRange(["--extractor-args", "youtube:skip=hls,dash"]);
                 if (!string.IsNullOrWhiteSpace(item.FileName) && item.FileName != DownloadNames.FromUrl(new Uri(item.Url)))
                 {
                     args[args.IndexOf("--output") + 1] = DownloadNames.Sanitize(Path.GetFileNameWithoutExtension(item.FileName)) + ".%(ext)s";
@@ -82,7 +92,14 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
                     args.Add("--"); args.Add(url);
                     string? output = null;
                     var errors = new Queue<string>();
-                    var info = new ProcessStartInfo(tools.YtDlp) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                    void ReportProgressLine(string line)
+                    {
+                        if (!line.StartsWith("FLUX_PROGRESS:", StringComparison.Ordinal)) return;
+                        var fields = line[14..].Split('|');
+                        static long Bytes(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var bytes) && double.IsFinite(bytes) ? (long)Math.Max(0, bytes) : 0;
+                        if (fields.Length == 3) progress.Report(new ExternalDownloadProgress(Bytes(fields[0]), fields[1] is "NA" or "None" ? -1 : Bytes(fields[1]), Bytes(fields[2]), "Downloading media…"));
+                    }
+                    var info = new ProcessStartInfo(tools.YtDlp) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
                     foreach (var argument in args) info.ArgumentList.Add(argument);
                     using var process = Process.Start(info) ?? throw new IOException("The media engine could not start.");
                     using var cancellation = cancellationToken.Register(() => { try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } });
@@ -91,17 +108,12 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
                         while (await process.StandardOutput.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
                         {
                             if (line.StartsWith("FLUX_FILE:", StringComparison.Ordinal)) output = line[10..].Trim();
-                            if (line.StartsWith("FLUX_PROGRESS:", StringComparison.Ordinal))
-                            {
-                                var fields = line[14..].Split('|');
-                                static long Bytes(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var bytes) && double.IsFinite(bytes) ? (long)Math.Max(0, bytes) : 0;
-                                if (fields.Length == 3) progress.Report(new ExternalDownloadProgress(Bytes(fields[0]), fields[1] is "NA" or "None" ? -1 : Bytes(fields[1]), Bytes(fields[2]), "Downloading media…"));
-                            }
+                            ReportProgressLine(line);
                         }
                     }, CancellationToken.None);
                     var readError = Task.Run(async () =>
                     {
-                        while (await process.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line) { if (errors.Count >= 8) errors.Dequeue(); errors.Enqueue(line); }
+                        while (await process.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line) { if (line.StartsWith("FLUX_PROGRESS:", StringComparison.Ordinal)) ReportProgressLine(line); else { if (errors.Count >= 8) errors.Dequeue(); errors.Enqueue(line); } }
                     }, CancellationToken.None);
                     try
                     {
@@ -116,7 +128,7 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
                         throw;
                     }
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (process.ExitCode != 0) throw new IOException("Media download failed: " + string.Join(" ", errors).Replace(item.Url, "[source]", StringComparison.Ordinal));
+                    if (process.ExitCode != 0) throw new IOException(MediaArguments.ErrorMessage("Media download failed", string.Join(" ", errors), item.Url));
                     if (output == null) throw new IOException("The media engine did not report an output file.");
                     output = Path.GetFullPath(output);
                     var workspacePrefix = Path.GetFullPath(workDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -148,10 +160,17 @@ public sealed class MediaDownloadProcessor(string dataDirectory) : IExternalDown
             }
             catch (Exception ex) when (ex is IOException or System.Net.Http.HttpRequestException) { lastError = ex; }
         }
+        if (!challengeRetry && IsYoutubeUrl(item.Url) && lastError?.Message is { } failure && (failure.Contains("n challenge", StringComparison.OrdinalIgnoreCase) || failure.Contains("Requested format is not available", StringComparison.OrdinalIgnoreCase) || failure.Contains("Only images", StringComparison.OrdinalIgnoreCase)))
+        {
+            progress.Report(new ExternalDownloadProgress(0, -1, 0, "Refreshing the media engine and retrying YouTube formats…"));
+            await _tools.EnsureAsync(settings, null, cancellationToken, forceRefresh: true).ConfigureAwait(false);
+            return await DownloadWithRetryAsync(item, headers, settings, progress, cancellationToken, true).ConfigureAwait(false);
+        }
         throw new IOException(lastError?.Message ?? "The media download could not be completed.", lastError);
     }
 
     private static bool SameOrigin(string left, string right) => new Uri(left).GetLeftPart(UriPartial.Authority).Equals(new Uri(right).GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
+    private static bool IsYoutubeUrl(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase));
 
     public Task CleanupAsync(DownloadItem item)
     {

@@ -2,6 +2,17 @@
 
 An independently implemented, MIT-licensed Windows download manager with a native crimson/near-black interface.
 
+## Updated build, October 25, 2026
+
+- Fixed YouTube challenge support with the current SHA-verified yt-dlp release, bundled EJS solver and an explicitly configured supported JavaScript runtime. Public 720p extraction/download and FFprobe validation succeeded.
+- Added real title/thumbnail/available-quality lookup in a separate floating download window; corrected video filenames and suppressed media progress output.
+- Added separate `Flux.NativeHost.exe`, automatic Chrome/Edge/Firefox host registration and first-launch setup instructions, live connection status and recent transfers.
+- Added authenticated Grab All from the browser's active page with one batch popup, plus clipboard fallback.
+- Restructured the toolbar, columns, sidebar, properties and six Options tabs; preserved the existing engine and added regression checks for editing/restarting/deleting jobs.
+- Installer safely rejects replacing a locked running application. Updated assets replace the original v1.0.0 packages; reinstall this build to receive these fixes.
+
+The reference investigation and its unresolved parity boundaries are documented in `docs/IDM-REFERENCE.md`. The full real-browser button → popup → selected-quality click-through was interrupted; the successful public YouTube download was exercised through the actual C# media services, not a claim that this whole desktop interaction was completed automatically.
+
 ## Included
 
 - Adaptive parallel HTTP transfers with up to 32 connections, safe pause/resume checkpoints, restart/crash recovery, and bounded retries up to ten.

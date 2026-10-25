@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { normalizeUrls, validateResponse, explainNativeError, DEFAULT_SETTINGS, shouldCapture, normalizeDownload, domainMatches, isMediaUrl } from "../shared/protocol.mjs";
+import { normalizeUrls, validateResponse, explainNativeError, DEFAULT_SETTINGS, shouldCapture, normalizeDownload, captureMessage, domainMatches, isMediaUrl } from "../shared/protocol.mjs";
 
 test("normalizes batches, ignores blank lines, and removes duplicates", () => {
   assert.deepEqual(normalizeUrls(" https://example.com/a\r\n\nhttps://example.com/a\nHTTP://EXAMPLE.COM/b "), ["https://example.com/a", "http://example.com/b"]);
@@ -64,4 +64,12 @@ test("Firefox package uses an event page and stable Gecko ID", async () => {
   assert.equal(manifest.background.service_worker, undefined);
   assert.deepEqual(manifest.background.scripts, ["background.mjs"]);
   assert.equal(manifest.browser_specific_settings.gecko.id, "flux@flux.local");
+});
+
+test("flat capture protocol preserves title and filename with bounded metadata",()=>{
+  const result=captureMessage({url:"https://example.com/a.mp4",filename:"Clip.mp4",pageTitle:"Clip"});
+  assert.equal(result.type,"capture");assert.equal(result.filename,"Clip.mp4");assert.equal(result.fileName,undefined);assert.equal(result.pageTitle,"Clip");assert.equal(result.isMedia,true);
+  assert.throws(()=>captureMessage({url:"https://example.com/a",pageTitle:"a".repeat(1025)}));
+  for(const host of ["facebook.com","x.com","instagram.com"])assert.equal(isMediaUrl(`https://${host}/video/123`),true);
+  assert.equal(isMediaUrl("https://facebook.com.evil.test/video"),false);
 });

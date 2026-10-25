@@ -3,10 +3,12 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Diagnostics;
+using Flux.Core;
 
 namespace Flux.App.Services;
 
-public sealed record MediaToolPaths(string YtDlp, string FfmpegDirectory);
+public sealed record MediaToolPaths(string YtDlp, string FfmpegDirectory, string? JavaScriptRuntime = null, string JavaScriptRuntimeKind = "node");
 
 /// <summary>Downloads upstream media tools on first media use, verifies release digests before use.</summary>
 public sealed class MediaTools(string dataDirectory)
@@ -14,24 +16,36 @@ public sealed class MediaTools(string dataDirectory)
     private static readonly SemaphoreSlim InstallationGate = new(1, 1);
     private readonly string _directory = Path.Combine(dataDirectory, "tools");
 
-    public async Task<MediaToolPaths> EnsureAsync(IProgress<string>? progress, CancellationToken token)
+    public Task<MediaToolPaths> EnsureAsync(IProgress<string>? progress, CancellationToken token) => EnsureAsync(new DownloadSettings(), progress, token);
+
+    public async Task<MediaToolPaths> EnsureAsync(DownloadSettings settings, IProgress<string>? progress, CancellationToken token, bool forceRefresh = false)
     {
         await InstallationGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
             Directory.CreateDirectory(_directory);
-            var ytDlp = Path.Combine(_directory, "yt-dlp.exe");
-            var ffmpeg = Path.Combine(_directory, "ffmpeg.exe");
-            var ffprobe = Path.Combine(_directory, "ffprobe.exe");
+            var ytDlp = CustomTool(settings.YtDlpPath) ?? Path.Combine(_directory, "yt-dlp.exe");
+            var ffmpeg = CustomTool(settings.FfmpegPath) ?? Path.Combine(_directory, "ffmpeg.exe");
+            var ffmpegDirectory = Path.GetDirectoryName(ffmpeg)!;
+            var ffprobe = Path.Combine(ffmpegDirectory, "ffprobe.exe");
             using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Flux/1.0.0");
-            if (!File.Exists(ytDlp))
+            var checkedPath = Path.Combine(_directory, "yt-dlp-last-checked.txt");
+            if (string.IsNullOrWhiteSpace(settings.YtDlpPath) && (!File.Exists(ytDlp) || forceRefresh || !File.Exists(checkedPath) || DateTime.UtcNow - File.GetLastWriteTimeUtc(checkedPath) > TimeSpan.FromHours(12)))
             {
-                progress?.Report("Installing verified yt-dlp media engine…");
-                var asset = await FindAssetAsync(client, "yt-dlp/yt-dlp", "yt-dlp.exe", token).ConfigureAwait(false);
-                await DownloadVerifiedAsync(client, asset, ytDlp, token).ConfigureAwait(false);
+                try
+                {
+                    progress?.Report("Checking the latest verified yt-dlp media engine…");
+                    var asset = await FindAssetAsync(client, "yt-dlp/yt-dlp", "yt-dlp.exe", token).ConfigureAwait(false);
+                    string? currentHash = null;
+                    if (File.Exists(ytDlp)) { await using var current = File.OpenRead(ytDlp); currentHash = Convert.ToHexString(await SHA256.HashDataAsync(current, token).ConfigureAwait(false)); }
+                    if (!asset.Sha256.Equals(currentHash, StringComparison.OrdinalIgnoreCase)) await DownloadVerifiedAsync(client, asset, ytDlp, token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(checkedPath, asset.Sha256, token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (!forceRefresh && File.Exists(ytDlp) && !token.IsCancellationRequested && ex is HttpRequestException or IOException or OperationCanceledException)
+                { progress?.Report("Media update unavailable; using the cached engine. " + ex.Message); }
             }
-            if (!File.Exists(ffmpeg) || !File.Exists(ffprobe))
+            if (string.IsNullOrWhiteSpace(settings.FfmpegPath) && (!File.Exists(ffmpeg) || !File.Exists(ffprobe)))
             {
                 progress?.Report("Installing verified FFmpeg stream merger…");
                 var asset = await FindAssetAsync(client, "BtbN/FFmpeg-Builds", "ffmpeg-master-latest-win64-gpl.zip", token).ConfigureAwait(false);
@@ -51,15 +65,67 @@ public sealed class MediaTools(string dataDirectory)
                 archive.Dispose();
                 File.Delete(archivePath);
             }
-            return new MediaToolPaths(ytDlp, _directory);
+            var runtime = CustomTool(settings.JavaScriptRuntimePath) ?? FindRuntime();
+            if (runtime != null && Path.GetFileNameWithoutExtension(runtime).Equals("node", StringComparison.OrdinalIgnoreCase) && FileVersionInfo.GetVersionInfo(runtime).FileMajorPart < 22)
+            {
+                if (!string.IsNullOrWhiteSpace(settings.JavaScriptRuntimePath)) throw new IOException("YouTube requires Node.js 22 or newer. Choose a supported runtime or leave the path blank for automatic setup.");
+                runtime = null;
+            }
+            var runtimeKind = runtime != null && Path.GetFileNameWithoutExtension(runtime).Equals("deno", StringComparison.OrdinalIgnoreCase) ? "deno" : "node";
+            if (runtime == null)
+            {
+                runtimeKind = "deno";
+                runtime = Path.Combine(_directory, "deno.exe");
+                if (!File.Exists(runtime))
+                {
+                    progress?.Report("Installing verified JavaScript runtime for YouTube challenges…");
+                    var asset = await FindAssetAsync(client, "denoland/deno", "deno-x86_64-pc-windows-msvc.zip", token).ConfigureAwait(false);
+                    var archivePath = Path.Combine(_directory, "deno-download.zip");
+                    await DownloadVerifiedAsync(client, asset, archivePath, token).ConfigureAwait(false);
+                    using (var archive = ZipFile.OpenRead(archivePath))
+                    {
+                        var entry = archive.Entries.SingleOrDefault(value => value.Name == "deno.exe") ?? throw new IOException("The runtime archive does not contain deno.exe.");
+                        entry.ExtractToFile(runtime + ".installing", overwrite: true);
+                    }
+                    File.Move(runtime + ".installing", runtime, overwrite: true);
+                    File.Delete(archivePath);
+                }
+            }
+            return new MediaToolPaths(ytDlp, ffmpegDirectory, runtime, runtimeKind);
         }
         finally { InstallationGate.Release(); }
     }
 
     private sealed record ToolAsset(string Name, string Url, string Sha256);
 
+    private static string? CustomTool(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        if (!Path.IsPathFullyQualified(path) || !File.Exists(path)) throw new IOException("The selected custom media tool does not exist: " + path);
+        return Path.GetFullPath(path);
+    }
+
+    private static string? FindRuntime()
+    {
+        var directories = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Concat(new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs") });
+        foreach (var directory in directories.Where(value => !string.IsNullOrWhiteSpace(value)))
+        foreach (var file in new[] { "deno.exe", "node.exe" })
+        {
+            try
+            {
+                var path = Path.Combine(directory.Trim('"'), file);
+                if (File.Exists(path) && (file == "deno.exe" || FileVersionInfo.GetVersionInfo(path).FileMajorPart >= 22)) return Path.GetFullPath(path);
+            }
+            catch (ArgumentException) { }
+        }
+        return null;
+    }
+
     private static async Task<ToolAsset> FindAssetAsync(HttpClient client, string repository, string name, CancellationToken token)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        token = timeout.Token;
         using var response = await client.GetAsync("https://api.github.com/repos/" + repository + "/releases/latest", token).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         await using var content = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);

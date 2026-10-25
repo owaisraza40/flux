@@ -42,6 +42,8 @@ Compare the result with `SHA256SUMS.txt`.
 4. Start the download. The table shows size, progress, speed, ETA, status, and per-item actions.
 5. Pause/resume from the row controls. Use **Pause all** to hold the queue.
 
+New captures open a separate movable download window. Video captures first resolve the actual title, thumbnail and available formats; choose Best, an available 1080p/720p/480p/360p option, or MP3 audio before starting. Direct HTTP downloads prefer the server's `Content-Disposition` filename, then the URL path.
+
 Flux restores unfinished jobs after restart and offers to resume them. It uses durable checkpoint offsets; bytes not included in the last durable checkpoint can be downloaded again. Changed or unverifiable server content is restarted safely instead of being spliced into an old file.
 
 See the [user guide](docs/USER-GUIDE.md) for all settings, recovery behavior, and troubleshooting.
@@ -65,12 +67,14 @@ More connections do not guarantee faster downloads. Server limits, the network, 
 
 ### Queue and desktop
 
-- Ordered queue, High/Normal/Low priorities, and drag-to-reorder.
+- Ordered queue with up to 20 simultaneous jobs, High/Normal/Low priorities, and drag-to-reorder.
 - Per-job start/stop times and daily off-peak windows, including overnight windows.
 - Searchable completed/failed history and status/category filters.
-- Crimson-on-near-black interface with Inter and JetBrains Mono, table rows, thin progress bars, and compact context menus.
+- IDM-style toolbar ordering, collapsible category sidebar, filename/domain/size/progress/rate/ETA/date/status columns, and crimson-on-near-black styling.
+- Editable paused-job properties, restart from zero, copy URL, and distinct keep-file/delete-file/remove-history actions.
 - Tray icon with open/add/pause/resume/exit actions.
-- **Ctrl+Alt+D** global Add URL shortcut; **Ctrl+Q** explicit exit.
+- **Ctrl+N** / **Ins** Add URL, **Ctrl+A** Grab All links from the connected browser's active page (clipboard fallback), **Del** remove, **Ctrl+P** pause/resume, **Ctrl+Alt+D** global Add URL, and **Ctrl+Q** exit.
+- Six Options tabs: General, Connections, Browser Integration, Media, Scheduler and Notifications. Windows startup registration is opt-in.
 - Opt-in clipboard URL prompts and completion notifications.
 - Release update checks that notify; no silent executable installation.
 
@@ -86,11 +90,11 @@ Chrome/Edge and Firefox packages can:
 - Show a pre-filled confirmation dialog in Flux.
 - Apply capture filetype rules and domain allow/block lists.
 - Add video/audio download controls and identify HLS/DASH manifest hints.
-- Display an app-connection heartbeat badge.
+- Display green/grey connection state and recent application transfers in the extension popup.
 
-The extension pairs using native messaging, then connects through an authenticated loopback WebSocket at `ws://localhost:6543/`. A disconnected/refused handoff retains or resumes the ordinary browser download where possible.
+The first normal launch registers `com.flux.bridge` for Chrome, Edge and Firefox and shows extension installation instructions. The separate `Flux.NativeHost.exe` pairs the browser with the app, then capture uses an authenticated loopback WebSocket at `ws://localhost:6543/`. Settings shows an authenticated live connection rather than treating registry presence as connected. A disconnected/refused handoff retains or resumes the ordinary browser download where possible.
 
-HLS/DASH and supported video pages are handled through **yt-dlp and FFmpeg**. On first media use Flux downloads the separate upstream tools from GitHub and verifies their published SHA-256 digests before running them. They are not bundled in the installer. First-use preparation needs network access, disk space, and some time.
+HLS/DASH and supported video pages are handled through **yt-dlp and FFmpeg**. Flux checks the latest verified yt-dlp release periodically and uses its bundled EJS challenge solver with Node 22+ or Deno 2.3+. If no supported runtime is found, it installs a checksum-verified per-user Deno runtime. First media use downloads these separate tools from official GitHub releases and verifies their published SHA-256 digests. They are not bundled in the installer; preparation needs network access, disk space, and some time. Custom tool/runtime paths and a default quality are available in Options → Media.
 
 Media/site compatibility depends on the upstream extractor, source availability, login/session behavior, and format. DRM handling and access-control circumvention are not implemented. Media context supports domain-scoped cookies, referrer, and User-Agent; other custom headers belong to direct HTTP mode.
 
@@ -104,12 +108,12 @@ For Chrome/Edge:
 
 1. Open `chrome://extensions` or `edge://extensions`.
 2. Enable Developer mode, choose **Load unpacked**, and select `browser-extension/chromium`.
-3. Register the extension ID in Flux → **Browser integration**.
-4. Send a link to pair, then check the connection badge.
+3. Open Flux once so it registers the bundled extension's native host and displays the setup instructions.
+4. Choose **Connect** in the extension popup, then check its green badge and Flux's Browser Integration status. A custom extension build with another ID can be registered manually from Flux.
 
 The included CRX is a real CRX3 build package, **not a Chrome Web Store publication**. Consumer Chrome on Windows/macOS restricts directly installing off-store CRX files. Unpacked loading is the documented local-use/testing path.
 
-For Firefox, load `browser-extension/firefox/manifest.json` or its XPI using **Load Temporary Add-on** at `about:debugging#/runtime/this-firefox`, then register Firefox in Flux. Persistent Release/Beta installation requires AMO signing. The release XPI is unsigned; do not disable signature enforcement.
+For Firefox, load `browser-extension/firefox/manifest.json` or its XPI using **Load Temporary Add-on** at `about:debugging#/runtime/this-firefox`, then choose Connect. Flux registers its host automatically. Persistent Release/Beta installation requires AMO signing. The release XPI is unsigned; do not disable signature enforcement.
 
 See the [complete browser guide](docs/BROWSER-INTEGRATION.md) for permissions, cookies, pairing, capture settings, store limitations, and rebuilding with your own extension identity.
 
@@ -117,7 +121,7 @@ See the [complete browser guide](docs/BROWSER-INTEGRATION.md) for permissions, c
 
 Application state is in `%LOCALAPPDATA%\Flux`; default downloads go to `%USERPROFILE%\Downloads\Flux`.
 
-State can contain full URLs, request headers/cookies, partial-download checkpoints, browser pairings, and installed media tools. Do not upload that directory or paste credentials into public issues. Clipboard monitoring is opt-in. Flux does not import your browser-history database or unrelated cookies.
+State can contain full URLs, request headers/cookies, partial-download checkpoints, browser pairings, and installed media tools. Do not upload that directory or paste credentials into public issues. Clipboard monitoring is opt-in. The extension reads URL-matching cookies. Options → Media offers explicit browser-cookie extraction for login-required videos; its default is None, and browser encryption/profile locks may prevent it.
 
 Flux adds no advertising or analytics client. Network access is used for the requested URLs and their redirects, optional release checks, and first-use media-tool setup. Ordinary TLS certificate validation stays enabled. Credential headers are not automatically forwarded to unrelated redirect/mirror origins.
 
@@ -177,7 +181,7 @@ The latter runs the actual extension background source with controlled browser A
 
 ## Verification scope
 
-The final local build passed **30 engine scenarios, 43 native/WebSocket checks, 20 extension/package checks, nine service/media checks, and five published-EXE checks**. This includes adaptive splitting with pause/restart, forced process death, credential boundaries, queue policies, browser metadata, wrong-token/origin rejection, a real HLS download, and package signatures. The installer was also installed, checked, and uninstalled with a user-file preservation canary.
+See the [validation report](docs/VALIDATION.md) for the current revision's exact engine, bridge, extension, media, packaged-executable and installer results, including the public YouTube sample and any remaining limits. The suite includes forced-process-death recovery, byte hashes, credential boundaries, scheduling, queue policies and package signatures.
 
 The [validation report](docs/VALIDATION.md) is the source for final packaged-EXE, live HLS, visual, installer, and end-to-end results. A passing unit/integration suite is not a claim that every browser version, media site, proxy, hardware failure, or Windows PC has been tested. No exact IDM algorithm/performance equivalence is claimed.
 
@@ -188,6 +192,7 @@ src/Flux.Core/                    HTTP engine, queue, scheduler, durable state
 src/Flux.App/                     WPF interface and desktop lifecycle
 src/Flux.App/Integration/         Native messaging and loopback WebSocket bridge
 src/Flux.App/Services/            Media, completion hooks, update checks
+src/Flux.NativeHost/              Separate framed-stdio browser host
 tests/Flux.Tests/                Deterministic HTTP and recovery tests
 tests/Flux.Services.Tests/       Service and optional real-media checks
 browser-extension/              Chromium/Firefox source, packages, tests

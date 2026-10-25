@@ -58,13 +58,13 @@ The update service checks the `owaisraza40/flux` release feed and returns a noti
 
 The extension uses explicit capture rules, context menus, popup sends and media hints. Only matching target-URL cookies are read. Content scripts cannot provide local executable/action settings through the accepted DTO.
 
-Native messaging uses a bounded four-byte little-endian length plus JSON. The native host establishes a per-user token for the caller's browser-extension origin and can start/forward to the desktop through a current-user-only named pipe. The desktop listens on IPv4 loopback port 6543; the WebSocket upgrade requires a paired extension Origin, and the first message proves the matching token. Ordinary web-page Origins are rejected before accepting download data.
+Native messaging uses a bounded four-byte little-endian length plus JSON. A separate self-contained `Flux.NativeHost.exe` is registered as `com.flux.bridge` for Chrome, Edge and Firefox on normal startup. It establishes a per-user token for the caller's browser-extension origin and can start/forward to `Flux.exe` through a current-user-only named pipe. The desktop listens on IPv4 loopback port 6543; the WebSocket upgrade requires a paired extension Origin, and the first message proves the matching token. Ordinary web-page Origins are rejected before accepting download data. The live authenticated connection registry drives browser status; recent-job projections exclude private request headers and cookies.
 
 The app displays a pre-filled confirmation dialog. A transport acknowledgement means the dialog request was accepted, not that a transfer completed. Browser-created downloads are cancelled only after acknowledgement; disconnected/refused handoffs are left or resumed in the browser where possible.
 
 ## Desktop lifecycle
 
-WPF owns dispatching, table presentation, dialogs, tray UI, the opt-in clipboard monitor and global hotkey. The native host dispatch is selected before WPF startup so native stdout remains binary protocol output. A current-user single-instance mutex prevents duplicate managers. Explicit exit cancels bridge servers and awaits manager disposal; ordinary close can minimize to tray according to settings.
+WPF owns dispatching, table presentation, separate floating download/quality windows, tray UI, the opt-in clipboard monitor and global hotkey. The main executable retains legacy native invocation support; the registered separate host does not initialize WPF. A current-user single-instance mutex prevents duplicate managers. Explicit exit cancels bridge servers and awaits manager disposal; ordinary close can minimize to tray according to settings. Six Options tabs persist network, browser, media, scheduling and notification settings; an explicit startup toggle updates the current-user Windows Run entry.
 
 The diagnostic screenshot mode renders Flux's own visual tree and uses isolated test state. It is not a screenshot of unrelated desktop windows and does not seed fake completed downloads.
 

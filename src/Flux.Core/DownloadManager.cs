@@ -120,7 +120,7 @@ public sealed class DownloadManager : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(request.Referrer)) suppliedHeaders["Referer"] = DownloadNames.ValidateUrl(request.Referrer).AbsoluteUri;
         if (!string.IsNullOrWhiteSpace(request.Cookies)) suppliedHeaders["Cookie"] = request.Cookies;
         var headers = DownloadEngine.ValidateHeaders(suppliedHeaders);
-        if (!Enum.IsDefined(request.Priority) || !Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.CompletionAction)) throw new ArgumentException("Choose a valid download option.");
+        if (!Enum.IsDefined(request.Priority) || !Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.CompletionAction) || !Enum.IsDefined(request.MediaQuality)) throw new ArgumentException("Choose a valid download option.");
         if (request.SpeedLimitBytesPerSecond is < 0 or > 1_000_000_000_000) throw new ArgumentException("The download speed limit must be zero or positive.");
         if (request.Mirrors?.Count > 16) throw new ArgumentException("At most sixteen alternate mirrors are supported.");
         if (request.StopAt.HasValue && request.StopAt <= (request.ScheduledAt ?? DateTimeOffset.Now)) throw new ArgumentException("The scheduled stop must be after the download start.");
@@ -144,6 +144,7 @@ public sealed class DownloadManager : IAsyncDisposable
                 Priority = request.Priority, QueueOrder = _entries.Count == 0 ? 0 : _entries.Max(e => e.Item.QueueOrder) + 1,
                 SpeedLimitBytesPerSecond = request.SpeedLimitBytesPerSecond, StopAt = request.StopAt,
                 Mirrors = mirrors, Kind = request.Kind, CompletionAction = request.CompletionAction,
+                MediaQuality = request.MediaQuality,
                 CompletionScript = request.CompletionScript, ScanOnCompletion = request.ScanOnCompletion,
                 UserAgent = request.UserAgent, Referrer = request.Referrer, Cookies = request.Cookies,
                 ScheduledAt = request.ScheduledAt,
@@ -177,13 +178,14 @@ public sealed class DownloadManager : IAsyncDisposable
             var entry = FindLocked(id);
             if (entry.Item.Status is DownloadStatus.Completed or DownloadStatus.Skipped or DownloadStatus.Cancelled or DownloadStatus.Failed) return;
             entry.SchedulePaused = false;
-            entry.Item.Status = DownloadStatus.Paused;
             entry.Item.BytesPerSecond = 0;
             if (_running.TryGetValue(id, out var operation))
             {
+                entry.Item.ActivityMessage = "Pausing and saving transfer state…";
                 operation.Cancellation.Cancel();
                 runningTask = operation.Task;
             }
+            else entry.Item.Status = DownloadStatus.Paused;
         }
         NotifyChanged();
         if (runningTask is not null) await runningTask.ConfigureAwait(false);
@@ -223,6 +225,95 @@ public sealed class DownloadManager : IAsyncDisposable
     }
 
     public Task RetryAsync(Guid id) => ResumeAsync(id);
+
+    /// <summary>Restart from zero while retaining history identity and any completed user file.</summary>
+    public async Task RestartAsync(Guid id)
+    {
+        await PauseAsync(id).ConfigureAwait(false);
+        DownloadItem snapshot;
+        lock (_gate) { EnsureReady(); snapshot = FindLocked(id).Item.Clone(); }
+        await CleanupOwnedPartialsAsync(snapshot).ConfigureAwait(false);
+        lock (_gate)
+        {
+            var entry = FindLocked(id);
+            entry.Item.DownloadedBytes = 0; entry.Item.TotalBytes = -1; entry.Item.BytesPerSecond = 0;
+            entry.Item.CompletedAt = null; entry.Item.Error = null; entry.Item.ActivityMessage = null;
+            entry.Item.SupportsRanges = false; entry.SchedulePaused = false;
+            entry.Item.ScheduledAt = null; entry.Item.StopAt = null;
+            // Restart never silently replaces the previous completed file.
+            entry.CollisionPolicy = CollisionPolicy.Rename;
+            entry.Item.Status = _queuePaused ? DownloadStatus.Paused : DownloadStatus.Queued;
+            ChooseDestinationLocked(entry);
+        }
+        await PersistAsync().ConfigureAwait(false); NotifyChanged(); Pump();
+    }
+
+    public async Task UpdateItemAsync(Guid id, DownloadRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var uri = DownloadNames.ValidateUrl(request.Url);
+        var destination = Path.GetFullPath(request.DestinationDirectory);
+        if (!Enum.IsDefined(request.Priority) || !Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.CompletionAction) || !Enum.IsDefined(request.MediaQuality)) throw new ArgumentException("Choose valid download options.");
+        if (request.SpeedLimitBytesPerSecond is < 0 or > 1_000_000_000_000) throw new ArgumentException("The speed limit must be zero or positive.");
+        if (request.StopAt.HasValue && request.StopAt <= (request.ScheduledAt ?? DateTimeOffset.Now)) throw new ArgumentException("Stop time must be after start.");
+        Dictionary<string,string> supplied;
+        lock (_gate) { EnsureReady(); supplied = new Dictionary<string,string>(request.Headers ?? FindLocked(id).Headers, StringComparer.OrdinalIgnoreCase); }
+        if (!string.IsNullOrWhiteSpace(request.UserAgent)) supplied["User-Agent"] = request.UserAgent;
+        if (!string.IsNullOrWhiteSpace(request.Referrer)) supplied["Referer"] = DownloadNames.ValidateUrl(request.Referrer).AbsoluteUri;
+        if (!string.IsNullOrWhiteSpace(request.Cookies)) supplied["Cookie"] = request.Cookies;
+        var headers = DownloadEngine.ValidateHeaders(supplied);
+        if (request.Mirrors?.Count > 16) throw new ArgumentException("At most sixteen mirrors are supported.");
+        var mirrors = (request.Mirrors ?? []).Select(url => DownloadNames.ValidateUrl(url).AbsoluteUri).Distinct().ToList();
+        DownloadItem old;
+        lock (_gate)
+        {
+            EnsureReady(); var entry = FindLocked(id);
+            if (_running.ContainsKey(id) || entry.Item.Status is DownloadStatus.Completed or DownloadStatus.Resolving or DownloadStatus.Downloading)
+                throw new InvalidOperationException("Pause the transfer before editing its properties.");
+            old = entry.Item.Clone();
+            entry.Item.Status = DownloadStatus.Paused;
+        }
+        var fileName = DownloadNames.Sanitize(request.FileName ?? DownloadNames.FromUrl(uri));
+        var changedSource = old.Url != uri.AbsoluteUri || !string.Equals(old.DestinationDirectory,destination,StringComparison.OrdinalIgnoreCase) || old.FileName != fileName || old.Kind != request.Kind;
+        if (changedSource) await CleanupOwnedPartialsAsync(old).ConfigureAwait(false);
+        lock (_gate)
+        {
+            var entry = FindLocked(id);
+            if (_running.ContainsKey(id)) throw new InvalidOperationException("The transfer started while properties were being edited. Pause and try again.");
+            entry.Item.Url = uri.AbsoluteUri; entry.Item.DestinationDirectory = destination;
+            entry.Item.FileName = fileName; entry.Item.Kind = request.Kind; entry.Item.Priority = request.Priority;
+            entry.Item.MediaQuality = request.MediaQuality;
+            entry.Item.SpeedLimitBytesPerSecond = request.SpeedLimitBytesPerSecond; entry.Item.ScheduledAt = request.ScheduledAt;
+            entry.Item.StopAt = request.StopAt; entry.Item.Mirrors = mirrors; entry.Item.UserAgent = request.UserAgent;
+            entry.Item.Referrer = request.Referrer; entry.Item.Cookies = request.Cookies;
+            entry.Item.CompletionAction = request.CompletionAction; entry.Item.CompletionScript = request.CompletionScript;
+            entry.Item.ScanOnCompletion = request.ScanOnCompletion;
+            entry.CategoryExplicit = !string.IsNullOrWhiteSpace(request.Category);
+            entry.Item.Category = entry.CategoryExplicit ? request.Category!.Trim() : DownloadNames.Category(fileName);
+            entry.Headers = headers; entry.RequestedConnections = Math.Clamp(request.Connections ?? _settings.ConnectionsPerDownload,1,32);
+            entry.NameResolved = request.FileName is not null;
+            if (changedSource) { entry.Item.PartialDirectory = destination; entry.Item.DownloadedBytes = 0; entry.Item.TotalBytes = -1; entry.Item.SupportsRanges = false; }
+            entry.Item.Error = null; entry.Item.ActivityMessage = null; entry.Item.Status = DownloadStatus.Paused;
+            if (changedSource) ChooseDestinationLocked(entry);
+        }
+        await PersistAsync().ConfigureAwait(false); NotifyChanged();
+    }
+
+    public async Task DeleteAsync(Guid id, bool deleteFile)
+    {
+        await PauseAsync(id).ConfigureAwait(false);
+        DownloadItem item;
+        lock (_gate) { EnsureReady(); item = FindLocked(id).Item.Clone(); }
+        await RemoveAsync(id,deletePartial:true).ConfigureAwait(false);
+        if (deleteFile && item.Status == DownloadStatus.Completed && File.Exists(item.FilePath)) File.Delete(item.FilePath);
+    }
+
+    private async Task CleanupOwnedPartialsAsync(DownloadItem item)
+    {
+        foreach (var path in new[] { DownloadEngine.PartialPath(item), DownloadEngine.ResumePath(item) })
+            if (File.Exists(path)) File.Delete(path);
+        if (ExternalProcessor is { } processor && processor.CanHandle(item)) await processor.CleanupAsync(item).ConfigureAwait(false);
+    }
 
     public async Task SetPriorityAsync(Guid id, DownloadPriority priority)
     {
@@ -278,7 +369,8 @@ public sealed class DownloadManager : IAsyncDisposable
                 entry.SchedulePaused = false;
                 if (entry.Item.Status is DownloadStatus.Queued or DownloadStatus.Resolving or DownloadStatus.Downloading)
                 {
-                    entry.Item.Status = DownloadStatus.Paused;
+                    if (!_running.ContainsKey(entry.Item.Id)) entry.Item.Status = DownloadStatus.Paused;
+                    else entry.Item.ActivityMessage = "Pausing and saving transfer state…";
                     entry.Item.BytesPerSecond = 0;
                 }
             }
@@ -390,6 +482,12 @@ public sealed class DownloadManager : IAsyncDisposable
                 var operation = new RunningOperation(CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token));
                 _running.Add(entry.Item.Id, operation);
                 var settings = _settings.Clone();
+                if (settings.DailyScheduleEnabled && settings.ScheduledSpeedLimitBytesPerSecond > 0)
+                {
+                    settings.GlobalSpeedLimitBytesPerSecond = settings.GlobalSpeedLimitBytesPerSecond > 0
+                        ? Math.Min(settings.GlobalSpeedLimitBytesPerSecond, settings.ScheduledSpeedLimitBytesPerSecond)
+                        : settings.ScheduledSpeedLimitBytesPerSecond;
+                }
                 settings.CollisionPolicy = entry.CollisionPolicy;
                 operation.Task = Task.Run(() => RunEntryAsync(entry, operation, settings));
                 changed = true;

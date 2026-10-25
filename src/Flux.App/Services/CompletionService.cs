@@ -32,7 +32,7 @@ public sealed class CompletionService(DownloadManager manager)
 
         switch (item.CompletionAction)
         {
-            case CompletionAction.None: return;
+            case CompletionAction.None: if (manager.Settings.SoundOnCompletion) SystemSounds.Asterisk.Play(); return;
             case CompletionAction.PlaySound: SystemSounds.Asterisk.Play(); return;
             case CompletionAction.OpenFile: Process.Start(new ProcessStartInfo(item.FilePath) { UseShellExecute = true }); return;
             case CompletionAction.RunScript:

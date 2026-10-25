@@ -110,7 +110,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
         for (var restart = 0; restart < 3; restart++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var metadata = await ProbeWithRetryAsync(uri, headers, settings.RetryCount, cancellationToken).ConfigureAwait(false);
+            var metadata = await ProbeWithRetryAsync(uri, headers, settings.RetryCount, settings.RetryDelaySeconds, cancellationToken).ConfigureAwait(false);
             var resumable = !forceSequential && metadata.Ranges && metadata.Length >= 0 && (metadata.EntityTag is not null || metadata.LastModified.HasValue);
             var effective = metadata with { Ranges = resumable };
             resolved(effective);
@@ -163,11 +163,11 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
                 }
                 else if (resumable)
                 {
-                    await DownloadAdaptiveAsync(uri, headers, file, state, requestedConnections, settings.RetryCount, meter, bandwidth, cancellationToken).ConfigureAwait(false);
+                    await DownloadAdaptiveAsync(uri, headers, file, state, requestedConnections, settings.RetryCount, settings.RetryDelaySeconds, meter, bandwidth, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    await DownloadSequentialAsync(uri, headers, file, state, settings.RetryCount, meter, bandwidth, cancellationToken).ConfigureAwait(false);
+                    await DownloadSequentialAsync(uri, headers, file, state, settings.RetryCount, settings.RetryDelaySeconds, meter, bandwidth, cancellationToken).ConfigureAwait(false);
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 if (state.Length >= 0 && CompletedBytes(state) != state.Length)
@@ -218,7 +218,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
 
     private sealed record RangeWorker(SegmentState Segment, CancellationTokenSource Cancellation, Task Task);
 
-    private async Task DownloadAdaptiveAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, int requestedConnections, int retries, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
+    private async Task DownloadAdaptiveAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, int requestedConnections, int retries, double retryDelaySeconds, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
     {
         using var all = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var workers = new List<RangeWorker>();
@@ -227,7 +227,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
         void Start(SegmentState segment)
         {
             var local = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
-            var task = Task.Run(() => DownloadRangeAsync(uri, headers, file, state, segment, retries, meter, bandwidth, local.Token), CancellationToken.None);
+            var task = Task.Run(() => DownloadRangeAsync(uri, headers, file, state, segment, retries, retryDelaySeconds, meter, bandwidth, local.Token), CancellationToken.None);
             workers.Add(new RangeWorker(segment, local, task));
             Volatile.Write(ref state.ActiveConnections, workers.Count);
         }
@@ -285,7 +285,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
         }
     }
 
-    private async Task<TransferMetadata> ProbeWithRetryAsync(Uri uri, IReadOnlyDictionary<string, string> headers, int retries, CancellationToken cancellationToken)
+    private async Task<TransferMetadata> ProbeWithRetryAsync(Uri uri, IReadOnlyDictionary<string, string> headers, int retries, double retryDelaySeconds, CancellationToken cancellationToken)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -299,6 +299,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
                 var modified = response.Content.Headers.LastModified;
                 var disposition = response.Content.Headers.ContentDisposition;
                 var filename = disposition?.FileNameStar ?? disposition?.FileName?.Trim('"');
+                if (string.IsNullOrWhiteSpace(filename)) filename = DownloadNames.FromUrl(response.RequestMessage?.RequestUri ?? uri);
                 if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && response.Content.Headers.ContentRange is { HasLength: true, Length: 0 })
                     return new TransferMetadata(0, false, etag, modified, filename);
                 EnsureSuccessful(response);
@@ -314,12 +315,12 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
             }
             catch (Exception exception) when (CanRetry(exception, cancellationToken) && attempt < retries)
             {
-                await BackoffAsync(attempt, cancellationToken).ConfigureAwait(false);
+                await BackoffAsync(attempt, retryDelaySeconds, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task DownloadRangeAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, SegmentState segment, int retries, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
+    private async Task DownloadRangeAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, SegmentState segment, int retries, double retryDelaySeconds, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -367,12 +368,12 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
             catch (RestartTransferException) { throw; }
             catch (Exception exception) when (CanRetry(exception, cancellationToken) && attempt < retries)
             {
-                await BackoffAsync(attempt, cancellationToken).ConfigureAwait(false);
+                await BackoffAsync(attempt, retryDelaySeconds, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task DownloadSequentialAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, int retries, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
+    private async Task DownloadSequentialAsync(Uri uri, IReadOnlyDictionary<string, string> headers, FileStream file, TransferState state, int retries, double retryDelaySeconds, ProgressMeter meter, BandwidthLimiter bandwidth, CancellationToken cancellationToken)
     {
         var segment = state.Segments[0];
         for (var attempt = 0; ; attempt++)
@@ -417,7 +418,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
             }
             catch (Exception exception) when (CanRetry(exception, cancellationToken) && attempt < retries)
             {
-                await BackoffAsync(attempt, cancellationToken).ConfigureAwait(false);
+                await BackoffAsync(attempt, retryDelaySeconds, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -480,7 +481,7 @@ internal sealed class DownloadEngine(HttpClient http, BandwidthLimiter sharedBan
         return exception is HttpRequestException or IOException or OperationCanceledException;
     }
 
-    private static Task BackoffAsync(int attempt, CancellationToken cancellationToken) => Task.Delay(TimeSpan.FromMilliseconds(Math.Min(250 * Math.Pow(2, attempt), 5000)), cancellationToken);
+    private static Task BackoffAsync(int attempt, double retryDelaySeconds, CancellationToken cancellationToken) => Task.Delay(TimeSpan.FromSeconds(Math.Min(retryDelaySeconds * Math.Pow(2, attempt), 300)), cancellationToken);
 
     private static TransferState NewState(string url, TransferMetadata metadata, int connections)
     {

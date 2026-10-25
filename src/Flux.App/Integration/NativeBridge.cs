@@ -37,7 +37,8 @@ public static class NativeBridge
         if (Uri.TryCreate(args[0], UriKind.Absolute, out var origin)
             && origin.Scheme is "chrome-extension" or "moz-extension") return true;
         return args.Length >= 2
-            && Path.GetFileName(args[0]).Equals(BrowserIntegration.HostName + ".json", StringComparison.OrdinalIgnoreCase)
+            && (Path.GetFileName(args[0]).Equals(BrowserIntegration.HostName + ".json", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(args[0]).Equals(BrowserIntegration.LegacyHostName + ".json", StringComparison.OrdinalIgnoreCase))
             && args[1].Equals(BrowserIntegration.FirefoxExtensionId, StringComparison.Ordinal);
     }
 
@@ -163,7 +164,7 @@ public static class NativeBridge
                         var sent = await SendDownloadsAsync(downloads, timeout.Token).ConfigureAwait(false);
                         if (!sent)
                         {
-                            var applicationPath = Environment.ProcessPath;
+                            var applicationPath = Path.Combine(AppContext.BaseDirectory, "Flux.exe");
                             if (string.IsNullOrWhiteSpace(applicationPath) || !File.Exists(applicationPath))
                                 throw new InvalidOperationException("Cannot locate the Flux application.");
                             var start = new ProcessStartInfo(applicationPath)

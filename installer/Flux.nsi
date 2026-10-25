@@ -45,6 +45,18 @@ FunctionEnd
 
 Section "Flux application (required)" MainSection
   SectionIn RO
+  ; Never partially overwrite a running installation. Silent upgrades fail safely.
+  IfFileExists "$INSTDIR\Flux.exe" 0 flux_files_ready
+  flux_retry_lock:
+  System::Call 'kernel32::CreateFileW(w "$INSTDIR\Flux.exe", i 0x40000000, i 0, p 0, i 3, i 0, p 0) p.r0'
+  StrCmp $0 -1 flux_file_locked
+  System::Call 'kernel32::CloseHandle(p r0)'
+  Goto flux_files_ready
+  flux_file_locked:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Close Flux using Exit Flux in its tray menu, then retry. Your download checkpoints are retained." /SD IDCANCEL IDRETRY flux_retry_lock
+  SetErrorLevel 2
+  Quit
+  flux_files_ready:
   SetOutPath "$INSTDIR"
   File /r "${ROOT}\artifacts\publish\*"
   File "${ROOT}\LICENSE"
@@ -85,8 +97,13 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.flux.downloads"
   DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.flux.downloads"
   DeleteRegKey HKCU "Software\Mozilla\NativeMessagingHosts\com.flux.downloads"
+  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.flux.bridge"
+  DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.flux.bridge"
+  DeleteRegKey HKCU "Software\Mozilla\NativeMessagingHosts\com.flux.bridge"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Flux"
   DeleteRegValue HKCU "Software\Flux" "InstallDir"
   Delete "$INSTDIR\Flux.exe"
+  Delete "$INSTDIR\Flux.NativeHost.exe"
   Delete "$INSTDIR\Flux.Core.dll"
   Delete "$INSTDIR\Flux.Core.pdb"
   Delete "$INSTDIR\licenses\dotnet-LICENSE.txt"
@@ -101,10 +118,12 @@ Section "Uninstall"
   Delete "$INSTDIR\docs\BROWSER-INTEGRATION.md"
   Delete "$INSTDIR\docs\ARCHITECTURE.md"
   Delete "$INSTDIR\docs\CORE-TESTING.md"
+  Delete "$INSTDIR\docs\IDM-REFERENCE.md"
   Delete "$INSTDIR\docs\RELEASE-NOTES.md"
   Delete "$INSTDIR\docs\RELEASING.md"
   Delete "$INSTDIR\docs\VALIDATION.md"
   Delete "$INSTDIR\docs\images\flux.png"
+  Delete "$INSTDIR\docs\images\flux-add-popup.png"
   RMDir "$INSTDIR\docs\images"
   RMDir "$INSTDIR\docs"
   Delete "$INSTDIR\browser-extension\chromium\*.mjs"

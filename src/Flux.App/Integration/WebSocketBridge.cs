@@ -5,6 +5,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace Flux.App.Integration;
 
@@ -14,7 +15,33 @@ public static class WebSocketBridge
     public const int Port = 6543;
     internal static int? TestPort { get; set; }
     internal static int BoundPort { get; private set; }
+    public static Func<object[]>? RecentDownloadsProvider { get; set; }
+    public static Func<object?>? CaptureSettingsProvider { get; set; }
+    public static Action<string[]>? PageLinksReceived { get; set; }
+    private sealed record Peer(WebSocket Socket, DateTimeOffset ConnectedAt);
+    private sealed record PageRequest(Guid PeerId, TaskCompletionSource<bool> Completion);
+    private static readonly ConcurrentDictionary<Guid, Peer> Peers = new();
+    private static readonly ConcurrentDictionary<string, PageRequest> PageRequests = new();
+    private static readonly ConcurrentDictionary<WebSocket, SemaphoreSlim> SendLocks = new();
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static async Task<bool> RequestPageLinksAsync(CancellationToken cancellationToken = default)
+    {
+        var peer = Peers.Where(pair => pair.Value.Socket.State == WebSocketState.Open).OrderByDescending(pair => pair.Value.ConnectedAt).FirstOrDefault();
+        if (peer.Value == null) return false;
+        var requestId = Guid.NewGuid().ToString("N");
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        PageRequests[requestId] = new PageRequest(peer.Key, completion);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        try
+        {
+            await SendAsync(peer.Value.Socket, new { action="grab-links", requestId }, timeout.Token).ConfigureAwait(false);
+            return await completion.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is WebSocketException or OperationCanceledException or IOException) { return false; }
+        finally { PageRequests.TryRemove(requestId, out _); }
+    }
 
     public static async Task RunAsync(Action<BrowserDownload> onDownload, CancellationToken cancellationToken)
     {
@@ -80,6 +107,7 @@ public static class WebSocketBridge
         using var socket = WebSocket.CreateFromStream(stream, isServer: true, subProtocol: null, keepAliveInterval: TimeSpan.FromSeconds(20));
         var hello = await ReceiveAsync(socket, timeout.Token).ConfigureAwait(false);
         if (hello is null) return;
+        string? browser = null, userAgent = null;
         using (var document = JsonDocument.Parse(hello))
         {
             var root = document.RootElement;
@@ -87,8 +115,14 @@ public static class WebSocketBridge
                 || !root.TryGetProperty("token", out var token) || token.ValueKind != JsonValueKind.String
                 || !BridgePairing.Authenticate(origin, token.GetString()!))
             { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Pairing required", timeout.Token).ConfigureAwait(false); return; }
+            if (root.TryGetProperty("browser", out var browserValue) && browserValue.ValueKind == JsonValueKind.String) browser = browserValue.GetString();
+            if (root.TryGetProperty("userAgent", out var agentValue) && agentValue.ValueKind == JsonValueKind.String) userAgent = agentValue.GetString();
         }
-        await SendAsync(socket, new { ok = true, version = 1, type = "ready", message = "Flux is connected.", count = 0 }, timeout.Token).ConfigureAwait(false);
+        var connectionId = BrowserConnectionStatus.Connected(origin, userAgent, browser);
+        Peers[connectionId] = new Peer(socket, DateTimeOffset.UtcNow);
+        try
+        {
+        await SendAsync(socket, StatusResponse("ready"), timeout.Token).ConfigureAwait(false);
         while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
         {
             using var idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -99,15 +133,51 @@ public static class WebSocketBridge
             {
                 using var document = JsonDocument.Parse(message, new JsonDocumentOptions { MaxDepth = 8 });
                 var root = document.RootElement;
-                if (!root.TryGetProperty("action", out var action)) throw new InvalidDataException("Missing action.");
-                if (action.GetString() == "heartbeat") { await SendAsync(socket, new { ok = true, version = 1, type = "heartbeat", message = "Flux is active.", count = 0 }, idle.Token); continue; }
-                if (action.GetString() != "download" || !root.TryGetProperty("download", out var item)) throw new InvalidDataException("Unsupported action.");
+                var actionName = root.TryGetProperty("action", out var action) && action.ValueKind == JsonValueKind.String ? action.GetString() : null;
+                if (actionName == "heartbeat") { await SendAsync(socket, StatusResponse("heartbeat"), idle.Token); continue; }
+                if (actionName == "page-links")
+                {
+                    if (!root.TryGetProperty("requestId", out var request) || request.ValueKind != JsonValueKind.String
+                        || !PageRequests.TryGetValue(request.GetString()!, out var pending) || pending.PeerId != connectionId)
+                        throw new InvalidDataException("Unknown page-link request.");
+                    if (!root.TryGetProperty("urls", out var urlsElement) || urlsElement.ValueKind != JsonValueKind.Array || urlsElement.GetArrayLength() > NativeBridge.MaximumUrls)
+                        throw new InvalidDataException("Page links must be a bounded URL list.");
+                    if (urlsElement.GetArrayLength() == 0) pending.Completion.TrySetResult(false);
+                    else
+                    {
+                        var urls = NativeBridge.NormalizeUrls(urlsElement.EnumerateArray().Select(value => value.ValueKind == JsonValueKind.String ? value.GetString()! : throw new InvalidDataException("Invalid page URL.")));
+                        PageLinksReceived?.Invoke(urls);
+                        pending.Completion.TrySetResult(true);
+                    }
+                    await SendAsync(socket, new { ok=true, version=1, count=urlsElement.GetArrayLength(), message="Page links received by Flux." }, idle.Token);
+                    continue;
+                }
+                JsonElement item;
+                if (root.TryGetProperty("type", out var captureType) && captureType.ValueKind == JsonValueKind.String && captureType.GetString() == "capture") item = root;
+                else if (actionName != "download" || !root.TryGetProperty("download", out item)) throw new InvalidDataException("Unsupported action.");
                 onDownload(BrowserDownload.Parse(item));
                 await SendAsync(socket, new { ok = true, version = 1, message = "Download dialog opened in Flux.", count = 1 }, idle.Token).ConfigureAwait(false);
             }
             catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException)
             { await SendAsync(socket, new { ok = false, version = 1, message = error.Message, count = 0 }, idle.Token).ConfigureAwait(false); }
         }
+        }
+        finally
+        {
+            BrowserConnectionStatus.Disconnected(connectionId);
+            Peers.TryRemove(connectionId, out _);
+            SendLocks.TryRemove(socket, out _);
+            foreach (var pending in PageRequests.Values.Where(value => value.PeerId == connectionId)) pending.Completion.TrySetResult(false);
+        }
+    }
+
+    private static object StatusResponse(string type)
+    {
+        object[] recent = [];
+        object? settings = null;
+        try { recent = (RecentDownloadsProvider?.Invoke() ?? []).Take(10).ToArray(); } catch { }
+        try { settings = CaptureSettingsProvider?.Invoke(); } catch { }
+        return new { ok = true, version = 1, type, message = "Flux is connected.", count = 0, recentDownloads = recent, captureSettings = settings };
     }
 
     private static bool ValidKey(string key) { try { return Convert.FromBase64String(key).Length == 16; } catch (FormatException) { return false; } }
@@ -126,5 +196,11 @@ public static class WebSocketBridge
             if (result.EndOfMessage) return message.ToArray();
         }
     }
-    private static Task SendAsync<T>(WebSocket socket, T value, CancellationToken token) => socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions).AsMemory(), WebSocketMessageType.Text, true, token).AsTask();
+    private static async Task SendAsync<T>(WebSocket socket, T value, CancellationToken token)
+    {
+        var gate = SendLocks.GetOrAdd(socket, _ => new SemaphoreSlim(1,1));
+        await gate.WaitAsync(token).ConfigureAwait(false);
+        try { await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions).AsMemory(), WebSocketMessageType.Text, true, token).ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
 }

@@ -95,18 +95,33 @@ Check(!GetOk(wrongPair.Bytes), "native caller cannot pair a different extension 
 using var wsStop = new CancellationTokenSource();
 var wsArrivals = new System.Collections.Concurrent.ConcurrentQueue<BrowserDownload>();
 WebSocketBridge.TestPort = 0;
+WebSocketBridge.RecentDownloadsProvider = () => [new { fileName="Completed fixture.bin",status="Completed",progress=100 }];
 var wsServer = WebSocketBridge.RunAsync(value=>wsArrivals.Enqueue(value),wsStop.Token);
 var wsUri = new Uri($"ws://127.0.0.1:{WebSocketBridge.BoundPort}/");
 using (var socket = new ClientWebSocket())
 {
     socket.Options.SetRequestHeader("Origin",pairOrigin);
     await socket.ConnectAsync(wsUri,CancellationToken.None);
-    await WsSend(socket,new {action="hello",token=pairToken});
+    await WsSend(socket,new {action="hello",token=pairToken,browser="Edge",userAgent="Fixture Edg/1"});
     Check((await WsRead(socket)).GetProperty("ok").GetBoolean(), "authenticated loopback WebSocket connects");
+    Check(BrowserIntegration.GetStatuses()["Edge"] && !BrowserIntegration.GetStatuses()["Chrome"], "browser status requires an actual authenticated connection");
     await WsSend(socket,new {action="heartbeat"});
-    Check((await WsRead(socket)).GetProperty("type").GetString()=="heartbeat", "desktop heartbeat returns active state");
+    var heartbeat = await WsRead(socket);
+    Check(heartbeat.GetProperty("type").GetString()=="heartbeat", "desktop heartbeat returns active state");
+    Check(heartbeat.GetProperty("recentDownloads")[0].GetProperty("fileName").GetString()=="Completed fixture.bin", "heartbeat exposes real desktop recent downloads");
+    string[]? grabbed = null;
+    WebSocketBridge.PageLinksReceived = urls => grabbed = urls;
+    var grab = WebSocketBridge.RequestPageLinksAsync();
+    var grabCommand = await WsRead(socket);
+    Check(grabCommand.GetProperty("action").GetString()=="grab-links", "Grab All sends a command to the authenticated browser");
+    await WsSend(socket,new {action="page-links",requestId=grabCommand.GetProperty("requestId").GetString(),urls=new[]{"https://example.com/one.zip","https://example.com/two.pdf","https://example.com/one.zip"}});
+    Check((await WsRead(socket)).GetProperty("ok").GetBoolean() && await grab && grabbed?.Length==2, "Grab All validates and deduplicates page links before one UI batch callback");
+    await WsSend(socket,new {action="page-links",requestId=new string('0',32),urls=new[]{"https://example.com/one.zip"}});
+    Check(!(await WsRead(socket)).GetProperty("ok").GetBoolean(), "unsolicited page links cannot impersonate a desktop Grab All request");
     await WsSend(socket,new {action="download",download=new{url=metadata.Url,cookies=metadata.Cookies,referrer=metadata.Referrer,userAgent=metadata.UserAgent,fileName=metadata.FileName,isMedia=true}});
     Check((await WsRead(socket)).GetProperty("ok").GetBoolean() && wsArrivals.TryDequeue(out var webDownload) && webDownload.Cookies==metadata.Cookies && webDownload.IsMedia, "WebSocket capture reaches app callback with metadata");
+    await WsSend(socket,new {type="capture",url=metadata.Url,filename="Real title.mp4",pageTitle="Real title",isMedia=true});
+    Check((await WsRead(socket)).GetProperty("ok").GetBoolean() && wsArrivals.TryDequeue(out webDownload) && webDownload.FileName=="Real title.mp4" && webDownload.PageTitle=="Real title", "flat capture protocol preserves title and filename");
     await WsSend(socket,new{action="download",download=new{url="file:///private"}});
     Check(!(await WsRead(socket)).GetProperty("ok").GetBoolean(), "WebSocket rejects local file downloads");
     await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure,"test done",CancellationToken.None);
@@ -126,6 +141,8 @@ using (var socket = new ClientWebSocket())
     catch(WebSocketException){Check(true,"ordinary web-page origin is refused before WebSocket upgrade");}
 }
 wsStop.Cancel(); await wsServer;
+Check(!BrowserIntegration.GetStatuses()["Edge"], "disconnect clears actual browser connection status");
+Check(!await WebSocketBridge.RequestPageLinksAsync(), "Grab All reports no live browser for clipboard fallback");
 metadataStop.Cancel(); await metadataServer;
 Console.WriteLine($"All {passed} native bridge checks passed.");
 return 0;

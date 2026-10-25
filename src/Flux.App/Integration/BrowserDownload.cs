@@ -11,6 +11,7 @@ public sealed class BrowserDownload
     public string? Referrer { get; set; }
     public string? UserAgent { get; set; }
     public string? FileName { get; set; }
+    public string? PageTitle { get; set; }
     public bool IsMedia { get; set; }
 
     public static BrowserDownload Parse(JsonElement element)
@@ -18,15 +19,20 @@ public sealed class BrowserDownload
         if (element.ValueKind != JsonValueKind.Object) throw new InvalidDataException("A download must be an object.");
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
-            if (!seen.Add(property.Name) || property.Name is not ("url" or "cookies" or "referrer" or "userAgent" or "fileName" or "isMedia"))
+            if (!seen.Add(property.Name) || property.Name is not ("type" or "url" or "cookies" or "referrer" or "userAgent" or "fileName" or "filename" or "isMedia" or "pageTitle"))
                 throw new InvalidDataException("Unknown or duplicate browser download property.");
+        if (element.TryGetProperty("type", out var type) && (type.ValueKind != JsonValueKind.String || type.GetString() != "capture"))
+            throw new InvalidDataException("Unsupported capture type.");
+        if (element.TryGetProperty("fileName", out _) && element.TryGetProperty("filename", out _))
+            throw new InvalidDataException("Specify only one filename property.");
         var result = new BrowserDownload
         {
             Url = Read(element, "url", NativeBridge.MaximumUrlCharacters, required: true)!,
             Cookies = Read(element, "cookies", 16_384),
             Referrer = Read(element, "referrer", NativeBridge.MaximumUrlCharacters),
             UserAgent = Read(element, "userAgent", 2048),
-            FileName = Read(element, "fileName", 512),
+            FileName = Read(element, element.TryGetProperty("filename", out _) ? "filename" : "fileName", 512),
+            PageTitle = Read(element, "pageTitle", 1024),
             IsMedia = element.TryGetProperty("isMedia", out var media) && media.ValueKind == JsonValueKind.True
         };
         result.Url = NativeBridge.NormalizeUrls([result.Url])[0];

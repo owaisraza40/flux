@@ -1,90 +1,94 @@
 # Flux browser integration
 
-Flux has independent Chromium (Chrome/Edge) and Firefox extensions. Selected download metadata is handed to the local Flux desktop app, which opens a pre-filled download dialog. The normal transport is `ws://localhost:6543/`; native messaging establishes a per-user pairing token and provides a fallback that can start Flux.
+Flux captures selected HTTP/HTTPS links and opens a separate desktop download popup. Video requests resolve their real title and available qualities before you start the transfer. The extension pairs through the separate `Flux.NativeHost.exe`, then uses an authenticated `ws://localhost:6543/` connection. Keep both executables and the extension folders together.
 
-## Install on Chrome or Edge
+## First launch
 
-1. Install Flux or extract its complete portable archive. Keep `browser-extension/chromium` beside `Flux.exe`.
-2. Open `chrome://extensions` or `edge://extensions`, enable Developer mode, choose **Load unpacked**, and select the **chromium** folder.
-3. Open Flux → **Browser integration**. Register Chrome or Edge with the extension ID shown in the browser. The shipped key currently produces `ajkhpnkcciofgalpceobgmkbhegfnhoe`; use the ID actually displayed by your build.
-4. Open the extension popup, choose **Check desktop connection**, and send a link. The first send pairs that browser profile through its registered native host.
-5. Confirm the pre-filled URL, destination, and settings in Flux.
+Install Flux or extract the complete portable ZIP, then open `Flux.exe`. On normal startup Flux registers its own native messaging manifests for Chrome, Edge and Firefox under the current Windows user's keys:
 
-The release also contains `Flux-Chromium-1.0.0.crx`. It is a valid CRX3 signed with the project build key, **not Chrome Web Store signing**. Consumer Chrome on Windows/macOS restricts installing CRX packages from outside the Chrome Web Store. Use the unpacked folder for local testing; public consumer distribution requires a Chrome Web Store publication. Do not change enterprise/security policies to bypass this restriction. See [Chrome's distribution rules](https://developer.chrome.com/docs/extensions/how-to/distribute).
+```text
+HKCU\Software\Google\Chrome\NativeMessagingHosts\com.flux.bridge
+HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.flux.bridge
+HKCU\Software\Mozilla\NativeMessagingHosts\com.flux.bridge
+```
 
-## Install on Firefox
+The manifests live under `%LOCALAPPDATA%\Flux\NativeMessaging\<Browser>` and point to `Flux.NativeHost.exe`. No administrator rights or browser policy changes are required. First launch displays extension setup instructions. It cannot silently install extensions, and no Chrome/Edge store listing is claimed until a store publication exists. Browser Integration provides explicit registration repair if a portable folder moves.
 
-The Firefox package has stable add-on ID `flux@flux.local`.
+## Chrome and Edge
 
-For local testing, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select `browser-extension/firefox/manifest.json` or the release XPI. Temporary add-ons are removed when Firefox restarts. Register Firefox from Flux's Browser integration page.
+1. In Flux, open **Browser integration** and choose **Open extension folder** if needed.
+2. Open `chrome://extensions` or `edge://extensions`. Enable **Developer mode**, choose **Load unpacked**, and select `browser-extension/chromium` from the installed/extracted Flux folder.
+3. Open the extension popup and choose **Check desktop connection**. Flux's automatically registered host pairs this browser profile. Its icon and **ON** badge turn green when the authenticated desktop connection is live.
+4. If registration needs repair, use Flux's Browser Integration controls with the extension ID actually displayed in the browser. The shipped build identity is `ajkhpnkcciofgalpceobgmkbhegfnhoe`; contributor builds can have a different ID.
+5. Send a direct file URL or use a page's **Download with Flux** button, then review the desktop popup and choose **Start Download**.
 
-`Flux-Firefox-1.0.0.xpi` is an **unsigned XPI**, not an AMO-signed release. Release/Beta Firefox requires Mozilla signing for persistent installation. The repository includes source for submitting a listed or unlisted build to AMO; an authenticated Mozilla developer account and review/signing are separate external requirements. Do not disable signature enforcement. See [Mozilla signing and distribution](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/).
+Release assets include both a Chromium ZIP and a CRX3 signed by the project's private build key. This is **not Chrome Web Store signing**. Consumer Chrome on Windows/macOS restricts off-store CRX installation; unpacked loading is provided for local testing. Public ordinary installation needs a Chrome Web Store/Edge Add-ons publication. Do not alter browser security policies to bypass distribution rules. See [Chrome distribution](https://developer.chrome.com/docs/extensions/how-to/distribute).
 
-## Capture behavior
+## Firefox
 
-- **Right-click** a link, video, audio, image, or page and choose **Download with Flux**.
-- **Popup** accepts one or up to 100 HTTP/HTTPS URLs.
-- **Automatic capture** is enabled for configured extensions when the desktop heartbeat is connected. Obvious file links are handed off from the content script; browser-created downloads can be paused, handed off, then cancelled only after desktop acknowledgement.
-- If Flux is disconnected, ordinary browser downloads remain in the browser. If a paused handoff is refused or fails before acknowledgement, the extension attempts to resume that browser download. It does not erase the browser's history or delete completed files.
-- An acknowledgement means Flux accepted the request for a dialog, not that the user started or completed a transfer. Cancelling Flux's dialog cancels that requested handoff.
-- The extension passes the selected URL, matching URL cookies (when enabled), page referrer, browser user agent, and available filename hint. Cookies from unrelated origins are not collected.
-- Captured HLS/DASH manifest hints and media buttons mark the request as media, allowing Flux's media processor to handle it.
+For local testing, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select `browser-extension/firefox/manifest.json` or the release XPI. The stable add-on ID is `flux@flux.local`; use this ID for registration rather than Firefox's generated `moz-extension` UUID. Return to the extension popup and check the desktop connection.
 
-Choose **Capture rules & privacy settings** from the popup or the browser's extension options. Configure automatic capture, media buttons, cookie passthrough, comma-separated file extensions, and allowed/blocked domain lists. A domain rule also matches its subdomains. Block rules take precedence; an empty allow list means any domain. Reload existing pages after changing media-button settings. Explicit popup/context-menu sends are intentional requests and are not blocked by the automatic-capture domain list.
+Temporary add-ons disappear when Firefox restarts. The XPI is **unsigned**: persistent Release/Beta installation requires AMO signing and its external account/review process. Do not disable signature enforcement. See [Mozilla signing and distribution](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/).
 
-The app heartbeat badge reads **ON** when connected. A disconnected/idle badge is blank. The popup explains native-host registration failures and provides the current extension ID.
+## Capture and fallback
 
-## Media buttons
+- Matching ordinary file links are intercepted by content scripts at document start, including embedded frames, before their default browser navigation. Filetype and domain rules apply only to automatic capture.
+- Browser-created downloads that cannot be intercepted as page links are observed after creation. Flux pauses them, requests a desktop dialog, and cancels the browser transfer only after acknowledgment. Browser APIs do not permit a promise of universal interception before any bytes arrive.
+- Disconnected Flux leaves ordinary browser downloads alone. Refused/failed handoff attempts resume a paused browser transfer where the browser permits. Flux does not erase browser history or completed files.
+- Right-click a link/video/audio/image/page and choose **Download with Flux**, or paste up to 100 URLs into the extension popup. These explicit sends are independent of automatic capture rules.
+- Desktop acknowledgement means the separate download popup was requested, not that a transfer was started. Cancelling that popup cancels that requested handoff.
+- The popup shows connection state, Add URL input, and up to ten recent downloads from the running desktop app, including their real filename/status/progress. It does not fabricate history.
 
-Content scripts add a compact crimson **Download with Flux** control to visible video/audio elements and to supported YouTube, Vimeo, and Dailymotion pages. The extension also records recent `.m3u8` and `.mpd` request URLs for the current tab.
+Configure filetypes, whitelist and blacklist in desktop **Options → Browser Integration**. Desktop rules take precedence while connected. Browser options retain automatic-capture/media-button toggles and matching-cookie passthrough; local filetype/domain rules apply when no desktop rules have been received. A domain also matches its subdomains, block rules win, and an empty allow list allows every domain. Existing content scripts refresh settings within a few seconds.
 
-Availability is not a promise that a particular site, login, stream format, geographic restriction, or DRM-protected media is supported. Blob URLs are not file URLs; Flux may need the original page or discovered manifest and its separate media tools. DRM decryption and access-control circumvention are not implemented.
+## Video and audio
 
-## Permissions and local data
+A compact green **Flux · Download** control follows the top-right of visible `<video>`/`<audio>` players. It supports embedded players and page URLs on YouTube, Vimeo, Dailymotion, Facebook, Twitter/X and Instagram. Site playback URLs such as blobs are not downloaded as files: the original page or a detected HLS/DASH manifest is sent to the desktop media resolver. Titles come from page metadata as hints; the desktop obtains authoritative title/formats from yt-dlp.
 
-The manifests request `nativeMessaging`, `contextMenus`, `activeTab`, `storage`, `cookies`, `downloads`, `webRequest`, `alarms`, and HTTP/HTTPS host access. Those permissions enable the explicitly described capture functions. Captured credentials are passed only to your local Flux process for the selected download. Flux may retain URLs/headers in its private local history; do not share that state publicly.
+Clicking the media control opens Flux's separate popup with the resolved title, thumbnail when available, quality choices, save path and Start/Cancel controls. A supported site/player is not a guarantee of downloadable media: upstream extractor support, authentication, geographic rules, changing websites and available formats still apply. DRM decryption and access-control circumvention are not implemented.
 
-Pairing tokens are stored in extension-local storage and `%LOCALAPPDATA%/Flux/bridge-pairings.json`. Tokens are not copied into source or release assets. Native manifests live under `%LOCALAPPDATA%/Flux/NativeMessaging/<Browser>`; registrations use only that Windows user's HKCU native-messaging keys. Pairing is through native messaging, never through a web page.
+## Protocol and privacy
 
-The WebSocket listener binds IPv4 loopback on port 6543. It requires an extension Origin already paired by native invocation plus the matching 256-bit token. It rejects ordinary HTTP page origins, wrong tokens, unsupported URLs, oversized messages, duplicate native properties, and browser-supplied executable/local-action settings. Native fallback uses a current-user-only named pipe.
+The native host uses the browser-standard four-byte little-endian length prefix and UTF-8 JSON body. The host process can start/forward to `Flux.exe` through a bounded current-user-only named pipe; it does not create WPF windows itself. This is Flux's independent protocol, not a claim that IDM's proprietary payload is plain JSON of the same shape.
 
-No browser history database is imported and no unrelated browser cookies are sent to Flux. Cookie/header transmission to the actual remote download server is controlled by the requested download and the desktop engine's redirect rules.
+Native invocation establishes a per-profile 256-bit token. The WebSocket handshake requires a paired extension Origin and the first JSON message proves possession of its matching token. Ordinary webpage origins, wrong tokens, local-file URLs, oversized messages, duplicate/unknown capture fields and remotely specified executable/actions are rejected. Connected status in Flux comes from a currently authenticated socket, not merely a registry key.
 
-## Rebuild and package
+After authentication a capture has this shape:
 
-From the repository root:
+```json
+{
+  "type": "capture",
+  "url": "https://example.com/video.mp4",
+  "filename": "Video.mp4",
+  "cookies": "session=example",
+  "referrer": "https://example.com/page",
+  "userAgent": "Browser user agent",
+  "isMedia": true,
+  "pageTitle": "Video title"
+}
+```
+
+Cookie access is limited to the selected URL and can be disabled in extension options. Matching cookies, referrer, browser User-Agent and filename/title hints are sent only to the local app for that request. Unrelated origin cookies and browser history databases are not imported. Desktop state may retain URL/header credentials; never upload that state or private cookies in public issues. Pairing tokens live in extension-local storage and `%LOCALAPPDATA%\Flux\bridge-pairings.json`, never release assets.
+
+## Build and test
 
 ```powershell
-node browser-extension/scripts/build.mjs
 node browser-extension/scripts/package.mjs
 node --test browser-extension/tests/*.test.mjs
 dotnet restore browser-extension/tests/NativeBridge.Tests/NativeBridge.Tests.csproj --configfile NuGet.Config
 dotnet run --project browser-extension/tests/NativeBridge.Tests/NativeBridge.Tests.csproj -c Release --no-restore
+node browser-extension/tests/native-host-smoke.mjs artifacts/publish/Flux.NativeHost.exe
 ```
 
-The package script creates CRX3, Chromium ZIP, and Firefox XPI under `artifacts/release`. It verifies its RSA signature before writing the CRX. Tests independently decode and verify the CRX3 header/signature and both package contents.
+The package script generates Chromium/Firefox folders, CRX3/ZIP/XPI assets and verifies the CRX signature. The private signing key remains in git-ignored `.local/keys/flux-extension.pem`; only its public identity is shipped. Preserve that key privately to maintain the extension ID. A contributor's first local build generates a new key and matching registration identity.
 
-The first build generates an RSA private key under `.local/keys/flux-extension.pem` (git-ignored). **Keep this private build key outside Git** if maintaining the same release identity; losing it changes the extension ID on future builds. Only its public key and generated public ID are included in source/packages. A new contributor's own first build generates their own identity, so they must register the ID shown by that build.
-
-After desktop publishing, test the actual executable's inherited binary stdin/stdout:
-
-```powershell
-node browser-extension/tests/native-host-smoke.mjs artifacts/publish/Flux.exe
-```
-
-## Verification completed and remaining scope
-
-The native integration harness preserves its original 29 checks and adds metadata, pairing, and real loopback WebSocket cases: **43 passed**. These include matching/wrong tokens, refused ordinary web origins, heartbeat, end-to-end socket-to-app callback metadata, and local-file/script rejection.
-
-Node checks cover URL/metadata validation, domain/type filtering, HLS/DASH classification, Chrome/Firefox manifests, matching cookie passthrough, disconnected native fallback, browser pause/cancel acknowledgement, resume on refusal, and CRX3/XPI package structure/signature: **20 passed**.
-
-Browser API capture tests execute the actual background script against controlled browser/socket fixtures. They do not claim live Chrome/Edge/Firefox UI installation, store signing, all browser versions, or success on every media site. Actual browser loading and a download-dialog click-through should be checked before claiming those specific environments are verified.
+The expanded local suites passed **47 native/WebSocket checks** and **22 Node checks** before final packaging. They cover both legacy and flat capture payloads, title metadata, matching cookies, wrong-token/origin rejection, actual active connection status, real recent-download responses, capture fallback and package signatures. Browser API tests execute the actual source with controlled browser/socket fixtures; they do not establish live browser installation or universal site support. See [validation](VALIDATION.md) for the final packaged/live-browser evidence and its limits.
 
 ## Troubleshooting
 
-- **No ON badge:** open Flux. Ensure another application has not occupied localhost port 6543. An unavailable WebSocket can use the registered native fallback for an explicit send.
-- **Native host not registered:** register the browser from the published Flux.exe. Moving the portable executable requires re-registration.
-- **ID forbidden:** copy the browser's actual extension ID, not a folder name or a Firefox moz-extension UUID.
-- **After Disconnect all:** both native registrations and pairing tokens are removed. Reconnect in Flux and send a link to pair again.
-- **Cookie authentication fails:** confirm cookie passthrough is enabled and the URL belongs to the intended site. Partitioned/site-specific login behavior may require separate handling; do not paste private cookies into public issues.
-- **Firefox install rejected / CRX blocked:** follow the signing/distribution limitations above; the files are packages, not proof of store approval.
+- **Grey OFF icon:** open Flux and check whether another application uses port 6543. Use the popup's connection check. The registered native fallback can start Flux for explicit sends.
+- **Host not found:** keep `Flux.NativeHost.exe` beside `Flux.exe`, open the complete installed package, and repair Browser Integration registration. Moving a portable folder requires re-registration.
+- **Host forbidden:** register the actual Chromium extension ID; Firefox uses `flux@flux.local`.
+- **Disconnected after Disconnect all:** registrations and pairing tokens were removed. Re-register, then check the connection to pair again.
+- **Login/media fails:** use only the intended site's matching cookies and the desktop's explicit cookie-source choice when needed. Never paste private credentials into public reports.
+- **CRX/XPI rejected:** follow the distribution/signing limits above. Package generation alone does not establish store approval.

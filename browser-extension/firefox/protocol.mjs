@@ -1,11 +1,11 @@
-export const HOST_NAME = "com.flux.downloads";
+export const HOST_NAME = "com.flux.bridge";
 export const MAXIMUM_URLS = 100;
 export const MAXIMUM_URL_LENGTH = 8192;
 export const DEFAULT_SETTINGS = Object.freeze({ autoCapture: true, captureMedia: true, sendCookies: true,
   extensions: ["zip","7z","rar","exe","msi","iso","pdf","epub","mp4","mkv","webm","mp3","flac","m3u8","mpd"], allowDomains: [], blockDomains: [] });
 
 export function isMediaUrl(value) {
-  try { const url = new URL(value); return /\.(m3u8|mpd)(?:$|[?#])/i.test(url.href) || /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|dai\.ly)$/i.test(url.hostname); }
+  try { const url = new URL(value); return /\.(m3u8|mpd|mp4|mkv|webm|mp3|m4a|aac|flac)(?:$|[?#])/i.test(url.href) || /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|dai\.ly|facebook\.com|fb\.watch|twitter\.com|x\.com|instagram\.com)$/i.test(url.hostname); }
   catch { return false; }
 }
 
@@ -26,12 +26,19 @@ export function shouldCapture(value, settings = DEFAULT_SETTINGS, filename = "")
 export function normalizeDownload(value) {
   if (!value || typeof value !== "object") throw new Error("Invalid download metadata.");
   const result = { url: normalizeUrls([value.url])[0], isMedia: Boolean(value.isMedia || isMediaUrl(value.url)) };
-  for (const [key, maximum] of [["cookies",16384],["referrer",8192],["userAgent",2048],["fileName",512]]) {
+  value = {...value, fileName:value.fileName ?? value.filename};
+  for (const [key, maximum] of [["cookies",16384],["referrer",8192],["userAgent",2048],["fileName",512],["pageTitle",1024]]) {
     if (value[key] == null || value[key] === "") continue;
     if (typeof value[key] !== "string" || value[key].length > maximum || /[\r\n\0]/.test(value[key])) throw new Error(`Invalid ${key}.`);
     result[key] = key === "referrer" ? normalizeUrls([value[key]])[0] : value[key];
   }
   return result;
+}
+
+export function captureMessage(value) {
+  const item=normalizeDownload(value);
+  const {fileName,...metadata}=item;
+  return {type:"capture",...metadata,...(fileName?{filename:fileName}:{})};
 }
 
 export function normalizeUrls(input) {

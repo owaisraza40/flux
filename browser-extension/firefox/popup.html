@@ -21,9 +21,10 @@
     <div class="actions"><button id="current-tab" class="quiet">Use current tab</button><span id="link-count">0 links</span></div>
     <button id="send" class="primary">Download with Flux <span aria-hidden="true">↗</span></button>
     <div id="status" class="status" role="status" aria-live="polite">Connect the desktop app to get started.</div>
+    <section aria-label="Recent desktop downloads"><h3>Recent downloads</h3><ul id="recent-downloads"><li>Connect Flux to see your downloads.</li></ul></section>
     <details>
       <summary>Connect your browser</summary>
-      <ol><li>Open the Flux desktop app.</li><li>Open <strong>Browser integration</strong>, choose your browser, and register this extension ID.</li><li>Return here and check the connection.</li></ol>
+      <ol><li>Install and open the Flux desktop app. The host registers automatically.</li><li>If needed, open <strong>Browser integration</strong> to repair registration.</li><li>Return here and check the connection.</li></ol>
       <label class="id-label" for="extension-id">This extension’s ID</label>
       <input id="extension-id" readonly aria-label="Extension ID">
       <p class="hint">Firefox uses <code>flux@flux.local</code>. Chrome and Edge use the ID above.</p>

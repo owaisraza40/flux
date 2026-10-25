@@ -75,7 +75,8 @@ public static class BridgePairing
         // Firefox invokes its host with the registered manifest path and add-on ID.
         return origin.StartsWith("moz-extension://", StringComparison.Ordinal)
             && args.Any(arg => arg.Equals(BrowserIntegration.FirefoxExtensionId, StringComparison.Ordinal))
-            && args.Any(arg => Path.GetFileName(arg).Equals(BrowserIntegration.HostName + ".json", StringComparison.OrdinalIgnoreCase));
+            && args.Any(arg => Path.GetFileName(arg).Equals(BrowserIntegration.HostName + ".json", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(arg).Equals(BrowserIntegration.LegacyHostName + ".json", StringComparison.OrdinalIgnoreCase));
     }
 
     private static Dictionary<string, string> Read()

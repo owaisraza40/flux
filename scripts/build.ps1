@@ -31,19 +31,27 @@ try {
   }
   Invoke-SfDotnet restore src/Flux.App/Flux.App.csproj -r win-x64 --configfile NuGet.Config
   Invoke-SfDotnet publish src/Flux.App/Flux.App.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
+  Invoke-SfDotnet restore src/Flux.NativeHost/Flux.NativeHost.csproj -r win-x64 --configfile NuGet.Config
+  Invoke-SfDotnet publish src/Flux.NativeHost/Flux.NativeHost.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/native-host
+  Copy-Item -LiteralPath artifacts/native-host/Flux.NativeHost.exe -Destination artifacts/publish -Force
   & node browser-extension/tests/native-host-smoke.mjs (Join-Path $sfRoot 'artifacts\publish\Flux.exe')
   if ($LASTEXITCODE -ne 0) { throw 'Published native host smoke test failed' }
+  & node browser-extension/tests/native-host-smoke.mjs (Join-Path $sfRoot 'artifacts\publish\Flux.NativeHost.exe')
+  if ($LASTEXITCODE -ne 0) { throw 'Separate native host smoke test failed' }
   New-Item -ItemType Directory -Path artifacts/release -Force | Out-Null
   Copy-Item -LiteralPath LICENSE,README.md,THIRD-PARTY-NOTICES.md -Destination artifacts/publish -Force
   New-Item -ItemType Directory -Path artifacts/publish/docs -Force | Out-Null
-  $sfPublicDocs = @('ARCHITECTURE.md','BROWSER-INTEGRATION.md','CORE-TESTING.md','RELEASE-NOTES.md','RELEASING.md','USER-GUIDE.md','VALIDATION.md')
+  $sfPublicDocs = @('ARCHITECTURE.md','BROWSER-INTEGRATION.md','CORE-TESTING.md','IDM-REFERENCE.md','RELEASE-NOTES.md','RELEASING.md','USER-GUIDE.md','VALIDATION.md')
   foreach ($sfDoc in $sfPublicDocs) { Copy-Item -LiteralPath (Join-Path 'docs' $sfDoc) -Destination artifacts/publish/docs -Force }
   New-Item -ItemType Directory -Path artifacts/publish/docs/images -Force | Out-Null
   Copy-Item -LiteralPath docs/images/flux.png -Destination artifacts/publish/docs/images -Force
+  Copy-Item -LiteralPath docs/images/flux-add-popup.png -Destination artifacts/publish/docs/images -Force
   $sfPortableZip = Join-Path $sfRoot 'artifacts\release\Flux-1.0.0-win-x64-portable.zip'
   Compress-Archive -Path artifacts/publish/* -DestinationPath $sfPortableZip -Force
   $sfBrowserZip = Join-Path $sfRoot 'artifacts\release\Flux-Browser-Extension-1.0.0.zip'
   Compress-Archive -Path browser-extension/chromium,browser-extension/firefox,docs/BROWSER-INTEGRATION.md -DestinationPath $sfBrowserZip -Force
+  Copy-Item -LiteralPath artifacts/release/Flux-Chromium-1.0.0.zip -Destination artifacts/release/Flux-Chromium.zip -Force
+  Copy-Item -LiteralPath artifacts/release/Flux-Firefox-1.0.0.xpi -Destination artifacts/release/Flux-Firefox.xpi -Force
   if (-not $SkipInstaller) {
     if (-not $NsisCompiler) {
       $sfNsisCandidates = @((Join-Path (Split-Path -Parent $sfRoot) 'tools\NSIS\nsis-3.13\makensis.exe'), "${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe")

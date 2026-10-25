@@ -8,7 +8,7 @@ const source=(await readFile(new URL("../shared/background.mjs",import.meta.url)
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 async function environment({online=true,accept=true,native=true}={}){
-  const observed={native:[],socket:[],cookies:[],downloads:[],badges:[]};
+  const observed={native:[],socket:[],cookies:[],downloads:[],badges:[],connections:[],tabMessages:[]};
   const callbacks={};
   const store={fluxPairToken:"A".repeat(64),fluxSettings:{...protocol.DEFAULT_SETTINGS}};
   const event=name=>({addListener(listener){callbacks[name]=listener;}});
@@ -17,7 +17,7 @@ async function environment({online=true,accept=true,native=true}={}){
     storage:{local:{async get(key){return {[key]:store[key]};},async set(values){Object.assign(store,values);}}},
     action:{async setBadgeText(value){observed.badges.push(value.text);},async setBadgeBackgroundColor(){},async setTitle(){}},
     cookies:{async getAll(value){observed.cookies.push(value.url);return [{name:"session",value:"fixture"}];}},
-    tabs:{async query(){return [{id:1,url:"https://example.com/page"}];},onRemoved:event("removed")},
+    tabs:{async query(){return [{id:1,url:"https://example.com/page"}];},async sendMessage(id,message,options){observed.tabMessages.push({id,message,options});return {urls:["https://example.com/a.zip","https://example.com/b.pdf"]};},onRemoved:event("removed")},
     contextMenus:{async removeAll(){},create(){},onClicked:event("menu")},
     webRequest:{onBeforeRequest:event("request")},
     downloads:{onCreated:event("download"),async pause(id){observed.downloads.push(["pause",id]);},async resume(id){observed.downloads.push(["resume",id]);},async cancel(id){observed.downloads.push(["cancel",id]);}},
@@ -25,7 +25,7 @@ async function environment({online=true,accept=true,native=true}={}){
   };
   class FakeWebSocket extends EventTarget{
     static OPEN=1;readyState=0;
-    constructor(url){super();this.url=url;queueMicrotask(()=>{if(!online)this.dispatchEvent(new Event("error"));else{this.readyState=1;this.dispatchEvent(new Event("open"));}});}
+    constructor(url){super();this.url=url;observed.connections.push(this);queueMicrotask(()=>{if(!online)this.dispatchEvent(new Event("error"));else{this.readyState=1;this.dispatchEvent(new Event("open"));}});}
     send(raw){const value=JSON.parse(raw);observed.socket.push(value);const response=value.action==="hello"?{ok:true,version:1,type:"ready",message:"ready",count:0}:value.action==="heartbeat"?{ok:true,version:1,type:"heartbeat",message:"active",count:0}:{ok:accept,version:1,message:accept?"Opened dialog":"Test desktop refusal",count:accept?1:0};queueMicrotask(()=>{const event=new Event("message");event.data=JSON.stringify(response);this.dispatchEvent(event);});}
     close(){this.readyState=3;this.dispatchEvent(new Event("close"));}
   }
@@ -42,8 +42,8 @@ async function environment({online=true,accept=true,native=true}={}){
 test("capture passes selected URL cookies, referrer, UA and filename through authenticated WebSocket",async()=>{
   const env=await environment();const result=await env.request({type:"send",downloads:[{url:"https://files.example.com/a.zip",fileName:"a.zip"}]});
   assert.equal(result.ok,true);assert.deepEqual(env.observed.cookies,["https://files.example.com/a.zip"]);
-  const item=env.observed.socket.find(value=>value.action==="download").download;
-  assert.equal(item.cookies,"session=fixture");assert.equal(item.referrer,"https://example.com/page");assert.equal(item.userAgent,"FixtureBrowser/1");assert.equal(item.fileName,"a.zip");
+  const item=env.observed.socket.find(value=>value.type==="capture");
+  assert.equal(item.cookies,"session=fixture");assert.equal(item.referrer,"https://example.com/page");assert.equal(item.userAgent,"FixtureBrowser/1");assert.equal(item.filename,"a.zip");
   assert.equal(env.observed.native.length,0);
 });
 test("disconnected WebSocket uses metadata-preserving native fallback for an explicit user send",async()=>{
@@ -69,10 +69,27 @@ test("domain blacklist suppresses browser capture",async()=>{
 test("HLS request discovery routes capture to media processing",async()=>{
   const env=await environment();env.callbacks.request({tabId:1,url:"https://cdn.example.com/manifest.m3u8?token=fixture"});
   const result=await env.request({type:"media"});assert.equal(result.ok,true);
-  const download=env.observed.socket.find(value=>value.action==="download").download;assert.equal(download.isMedia,true);assert.match(download.url,/manifest.m3u8/);
+  const download=env.observed.socket.find(value=>value.type==="capture");assert.equal(download.isMedia,true);assert.match(download.url,/manifest.m3u8/);
 });
 test("cookie passthrough can be disabled without losing URL handoff",async()=>{
   const env=await environment();env.store.fluxSettings.sendCookies=false;
   const result=await env.request({type:"send",urls:["https://example.com/a.zip"]});assert.equal(result.ok,true);assert.deepEqual(env.observed.cookies,[]);
-  assert.equal(env.observed.socket.find(value=>value.action==="download").download.cookies,undefined);
+  assert.equal(env.observed.socket.find(value=>value.type==="capture").cookies,undefined);
+});
+
+test("video page title is carried without becoming an executable or local action",async()=>{
+  const env=await environment();
+  const response=await env.request({type:"media",url:"https://www.youtube.com/watch?v=fixture",pageTitle:"A public video",completionScript:"evil.exe"});
+  assert.equal(response.ok,true);
+  const sent=env.observed.socket.find(value=>value.type==="capture");
+  assert.equal(sent.pageTitle,"A public video");assert.equal(sent.isMedia,true);assert.equal(sent.completionScript,undefined);
+});
+
+test("authenticated desktop Grab All asks current page content script and returns bounded links",async()=>{
+  const env=await environment();
+  const event=new Event("message");event.data=JSON.stringify({action:"grab-links",requestId:"b".repeat(32)});
+  env.observed.connections[0].dispatchEvent(event);await wait(30);
+  assert.equal(env.observed.tabMessages.length,1);assert.equal(env.observed.tabMessages[0].options.frameId,0);
+  const reply=env.observed.socket.find(value=>value.action==="page-links");
+  assert.equal(reply.requestId,"b".repeat(32));assert.deepEqual(reply.urls,["https://example.com/a.zip","https://example.com/b.pdf"]);
 });

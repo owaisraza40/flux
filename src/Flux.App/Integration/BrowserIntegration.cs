@@ -8,7 +8,8 @@ namespace Flux.App.Integration;
 /// <summary>Explicit, per-user browser native messaging registration. No browser preferences are changed.</summary>
 public static partial class BrowserIntegration
 {
-    public const string HostName = "com.flux.downloads";
+    public const string HostName = "com.flux.bridge";
+    public const string LegacyHostName = "com.flux.downloads";
     public const string ChromiumExtensionId = ExtensionIdentity.ChromiumExtensionId;
     public const string FirefoxExtensionId = "flux@flux.local";
     private static readonly (string Name, string RegistryPath)[] Browsers =
@@ -17,6 +18,22 @@ public static partial class BrowserIntegration
         ("Edge", @"Software\Microsoft\Edge\NativeMessagingHosts\" + HostName),
         ("Firefox", @"Software\Mozilla\NativeMessagingHosts\" + HostName)
     ];
+
+    /// <summary>Registers all supported browsers for this user's installed host. Returns true once per installation.</summary>
+    public static bool EnsureRegistered()
+    {
+        RegisterChrome(ChromiumExtensionId);
+        RegisterEdge(ChromiumExtensionId);
+        RegisterFirefox(FirefoxExtensionId);
+        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Flux");
+        var application = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Flux.exe"));
+        var firstRun = !string.Equals(key.GetValue("BrowserSetupShownFor") as string, application, StringComparison.OrdinalIgnoreCase);
+        if (firstRun) key.SetValue("BrowserSetupShownFor", application);
+        return firstRun;
+    }
+
+    public static IReadOnlyDictionary<string, bool> GetStatuses() => BrowserConnectionStatus.GetStatuses();
+    public static string SetupInstructionsPath => Path.Combine(AppContext.BaseDirectory, "docs", "BROWSER-INTEGRATION.md");
 
     public static string RegisterChrome(string extensionId) => Register("Chrome", ValidateChromiumId(extensionId), false);
     public static string RegisterEdge(string extensionId) => Register("Edge", ValidateChromiumId(extensionId), false);
@@ -35,6 +52,7 @@ public static partial class BrowserIntegration
         {
             using var user = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
             user.DeleteSubKeyTree(browser.RegistryPath, throwOnMissingSubKey: false);
+            user.DeleteSubKeyTree(browser.RegistryPath.Replace(HostName, LegacyHostName, StringComparison.Ordinal), throwOnMissingSubKey: false);
         }
         var pairing = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flux", "bridge-pairings.json");
         if (File.Exists(pairing)) File.Delete(pairing);
@@ -51,10 +69,9 @@ public static partial class BrowserIntegration
     private static string Register(string browserName, string extensionId, bool firefox)
     {
         EnsureWindows();
-        var applicationPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(applicationPath) || !File.Exists(applicationPath)
-            || !Path.GetFileName(applicationPath).Equals("Flux.exe", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Run the published Flux.exe before registering browser integration.");
+        var applicationPath = Path.Combine(AppContext.BaseDirectory, "Flux.NativeHost.exe");
+        if (!File.Exists(applicationPath))
+            throw new InvalidOperationException("Flux.NativeHost.exe is missing. Extract or reinstall the complete Flux package before registering browser integration.");
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Flux", "NativeMessaging", browserName);
         Directory.CreateDirectory(directory);
@@ -86,6 +103,16 @@ public static partial class BrowserIntegration
             using var user = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
             using var key = user.CreateSubKey(browser.RegistryPath, writable: true);
             key.SetValue("", manifestPath, RegistryValueKind.String);
+            var legacyPath = browser.RegistryPath.Replace(HostName, LegacyHostName, StringComparison.Ordinal);
+            using var legacy = user.OpenSubKey(legacyPath);
+            var oldManifest = legacy?.GetValue("") as string;
+            // Migrate only Flux's own previous registration, never unrelated native hosts.
+            if (oldManifest != null && Path.GetFullPath(oldManifest).StartsWith(Path.GetFullPath(directory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                && Path.GetFileName(oldManifest).Equals(LegacyHostName + ".json", StringComparison.OrdinalIgnoreCase))
+            {
+                legacy?.Dispose();
+                user.DeleteSubKeyTree(legacyPath, throwOnMissingSubKey: false);
+            }
         }
         return manifestPath;
     }

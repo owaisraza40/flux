@@ -381,6 +381,58 @@ internal static class Program
             Assert(await File.ReadAllTextAsync(result.FilePath) == "media-fixture", "External processor result was not finalized.");
         });
 
+        await Run("editing a paused transfer preserves identity and switches owned data safely", async () =>
+        {
+            await using var manager = await Manager("edit-properties", speed: 524_288);
+            var request = Request(server,"slow","edit-properties");
+            request.Headers = new() { ["Authorization"] = "Bearer owned-fixture-only" };
+            var item = await manager.AddAsync(request);
+            await Until(() => Item(manager,item.Id).DownloadedBytes > 65_536);
+            await manager.PauseAsync(item.Id);
+            request.Url = server.Url("edited-source"); request.FileName = "edited-name.bin";
+            request.Headers = null;
+            request.SpeedLimitBytesPerSecond = 0; request.Priority = DownloadPriority.High;
+            request.MediaQuality = MediaQuality.Video720;
+            await manager.UpdateItemAsync(item.Id,request);
+            var edited = Item(manager,item.Id);
+            Assert(edited.Id == item.Id && edited.DownloadedBytes == 0 && edited.Status == DownloadStatus.Paused,"Edited job lost identity or stale partial bytes.");
+            Assert(edited.Priority == DownloadPriority.High && edited.MediaQuality == MediaQuality.Video720,"Edited options were not retained.");
+            await manager.ResumeAsync(item.Id);
+            var done = await Complete(manager,item.Id); await ExactFile(done.FilePath,server.Body);
+            Assert(done.FileName == "edited-name.bin","Edited filename was ignored.");
+            Assert(server.Requests.Where(r=>r.Path=="/edited-source").All(r=>r.Headers.GetValueOrDefault("Authorization")=="Bearer owned-fixture-only"),"Property editing lost private request headers.");
+        });
+        await Run("restart retains prior complete file and explicit delete removes only selected final file", async () =>
+        {
+            await using var manager = await Manager("restart-delete");
+            var item = await manager.AddAsync(Request(server,"restart-fixture","restart-delete"));
+            var original = await Complete(manager,item.Id);
+            await manager.RestartAsync(item.Id);
+            var restarted = await Complete(manager,item.Id);
+            Assert(restarted.FilePath != original.FilePath && File.Exists(original.FilePath),"Restart overwrote a completed file.");
+            await ExactFile(restarted.FilePath,server.Body);
+            await manager.DeleteAsync(item.Id,true);
+            Assert(!File.Exists(restarted.FilePath) && File.Exists(original.FilePath),"Delete removed the wrong completed file.");
+            Assert(!manager.GetSnapshot().Any(i=>i.Id==item.Id),"Deleted job remains in history.");
+            var keep = await manager.AddAsync(Request(server,"keep-fixture","restart-delete"));
+            var kept = await Complete(manager,keep.Id); await manager.DeleteAsync(keep.Id,false);
+            Assert(File.Exists(kept.FilePath),"Remove-from-list deleted the completed file.");
+        });
+        await Run("twenty-job settings and configured retry delay survive persistence", async () =>
+        {
+            await using var manager = await Manager("settings-20");
+            var settings = manager.Settings; settings.MaxConcurrentDownloads = 20; settings.RetryDelaySeconds = 0.5;
+            settings.ScheduledSpeedLimitBytesPerSecond = 128_000; await manager.SaveSettingsAsync(settings);
+            await using var reopened = new DownloadManager(Data("settings-20")); await reopened.InitializeAsync();
+            Assert(reopened.Settings.MaxConcurrentDownloads == 20 && reopened.Settings.RetryDelaySeconds == 0.5,"New network settings did not persist.");
+            Assert(DownloadNames.Category("disk.iso")=="Archives" && DownloadNames.FromUrl(new Uri("https://youtube.com/watch?v=test"))!="watch","Filename/category regression.");
+            await using var retryServer = new FixtureServer(); retryServer.Start();
+            var watch = Stopwatch.StartNew();
+            var request = Request(retryServer,"flaky","settings-20");
+            await Complete(manager,(await manager.AddAsync(request)).Id);
+            Assert(watch.Elapsed.TotalSeconds >= 1.3,"Configured exponential retry delay was ignored.");
+        });
+
         Console.WriteLine($"RESULT: {_passed} passed, {_failed} failed");
         Console.WriteLine("Test data is retained for inspection: " + Root);
         return _failed == 0 ? 0 : 1;

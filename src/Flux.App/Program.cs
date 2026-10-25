@@ -51,7 +51,8 @@ public static class Program
             }
             var exitAfterScreenshot = args.Contains("--ui-screenshot-exit", StringComparer.OrdinalIgnoreCase);
             if (exitAfterScreenshot && screenshotPath == null) throw new ArgumentException("--ui-screenshot-exit requires --ui-test-data and --ui-screenshot=<absolute PNG path>.");
-            var app = new FluxApplication(urls, testData, screenshotPath, exitAfterScreenshot);
+            var startInBackground = args.Contains("--background", StringComparer.OrdinalIgnoreCase);
+            var app = new FluxApplication(urls, testData, screenshotPath, exitAfterScreenshot, startInBackground);
             Trace("Calling Application.Run");
             var exitCode = app.Run();
             Trace("Application.Run exited=" + exitCode);

@@ -12,6 +12,7 @@ The installer does not redistribute yt-dlp or FFmpeg executables. A media job do
 
 - yt-dlp: https://github.com/yt-dlp/yt-dlp; license/dependency notices: https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE and https://github.com/yt-dlp/yt-dlp#license. The official executable can include dependencies with different licenses from the source.
 - FFmpeg: https://ffmpeg.org/legal.html; Windows build scripts/source: https://github.com/BtbN/FFmpeg-Builds. Flux requests the upstream GPL Windows build and retains its license. FFmpeg source: https://github.com/FFmpeg/FFmpeg.
+- Deno, when no supported existing JavaScript runtime is available: MIT; https://github.com/denoland/deno and https://github.com/denoland/deno/blob/main/LICENSE.md. The separately downloaded runtime executes yt-dlp's YouTube challenge solver. An existing Node.js 22+ runtime can be used instead: https://github.com/nodejs/node/blob/main/LICENSE.
 
 These run as separate processes; Flux's MIT license does not replace their licenses. Respect the upstream licenses if redistributing downloaded tools yourself.
 
